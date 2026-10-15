@@ -1,0 +1,18 @@
+{
+  "dependencies": {
+    "compression": "^1.8.2",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^6.10.0",
+    "qrcode": "^1.5.4"
+  },
+  "description": "VIRAL CLIPS — paid video subscription site with UPI QR payments, manual approval, one-time one-device magic links and auto-expiry.",
+  "main": "server.js",
+  "name": "viral-clips",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "version": "1.0.0"
+}

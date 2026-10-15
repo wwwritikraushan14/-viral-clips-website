@@ -1,0 +1,137 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin — VIRAL CLIPS</title><link rel="stylesheet" href="/styles.css">
+<link rel="canonical" href="/" id="canonical">
+<meta name="description" content="VIRAL CLIPS admin panel: verify payments, approve subscriptions, manage videos and subscribers.">
+<meta property="og:title" content="Admin — VIRAL CLIPS">
+<meta property="og:description" content="VIRAL CLIPS admin panel: verify payments, approve subscriptions, manage videos and subscribers.">
+<meta property="og:type" content="website"></head>
+<body><div class="wrap">
+  <div class="nav"><div class="logo">VIRAL <span>CLIPS</span> <small class="muted">admin</small></div>
+    <div><button class="btn small ghost" id="logoutBtn" style="display:none" onclick="logout()">Logout</button></div></div>
+
+  <div id="loginBox" class="center"><div class="card" style="width:100%;max-width:380px">
+    <h2>Admin login</h2>
+    <label>Password</label><input id="pw" type="password" onkeydown="if(event.key==='Enter')login()">
+    <button class="btn" style="width:100%;margin-top:10px" onclick="login()">Login</button>
+    <div id="loginMsg"></div>
+  </div></div>
+
+  <div id="panel" style="display:none">
+    <div class="tabs">
+      <button class="tab on" onclick="showTab('payments',this)">💰 Pending payments <span id="pendingCount"></span></button>
+      <button class="tab" onclick="showTab('subs',this)">👥 Subscribers</button>
+      <button class="tab" onclick="showTab('videos',this)">🎬 Videos</button>
+    </div>
+
+    <div id="tab-payments">
+      <p class="muted" style="font-size:14px">Verify the UTR in your UPI app / bank statement, then approve. The magic link is emailed automatically if SMTP is set up — otherwise copy it and send manually.</p>
+      <div id="paymentsList"></div>
+    </div>
+
+    <div id="tab-subs" style="display:none"><div id="subsList"></div></div>
+
+    <div id="tab-videos" style="display:none">
+      <div class="card"><h3>Upload a video</h3>
+        <label>Title</label><input id="vTitle" placeholder="Video title">
+        <label>Video file</label><input id="vFile" type="file" accept="video/*">
+        <button class="btn" style="margin-top:10px" onclick="uploadVideo()">Upload</button>
+        <div id="uploadMsg"></div>
+      </div>
+      <div id="videosList"></div>
+    </div>
+  </div>
+</div>
+<script>
+const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function login(){
+  const r = await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({password:document.getElementById('pw').value})});
+  if(r.ok){ document.getElementById('loginBox').style.display='none';
+    document.getElementById('panel').style.display='block';
+    document.getElementById('logoutBtn').style.display='inline-block'; loadAll(); }
+  else document.getElementById('loginMsg').innerHTML = '<div class="alert err">Wrong password</div>';
+}
+async function logout(){ await fetch('/api/admin/logout',{method:'POST'}); location.reload(); }
+function showTab(name,el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on')); el.classList.add('on');
+  ['payments','subs','videos'].forEach(t=>document.getElementById('tab-'+t).style.display = t===name?'block':'none');
+}
+async function loadAll(){ loadPayments(); loadSubs(); loadVideos(); }
+
+async function loadPayments(){
+  const rows = await fetch('/api/admin/payments?status=pending').then(r=>r.json());
+  document.getElementById('pendingCount').textContent = rows.length?`(${rows.length})`:'';
+  document.getElementById('paymentsList').innerHTML = rows.length ? `<div class="table-scroll"><table>
+    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Amount</th><th>UTR</th><th>When</th><th></th></tr>` +
+    rows.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.email)}</td><td>${esc(p.plan_id)}</td>
+      <td>₹${p.amount}</td><td><code>${esc(p.utr)}</code></td>
+      <td>${new Date(p.created_at).toLocaleString('en-IN')}</td>
+      <td style="white-space:nowrap"><button class="btn small" onclick="approve(${p.id})">Approve</button>
+      <button class="btn small ghost" onclick="reject(${p.id})">Reject</button></td></tr>`).join('')+'</table></div>'
+    : '<p class="muted" style="margin-top:16px">No pending payments. 🎉</p>';
+}
+async function approve(id){
+  if(!confirm('Approve this payment and generate the access link?')) return;
+  const r = await fetch('/api/admin/approve',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({paymentId:id})});
+  const d = await r.json();
+  if(d.ok){
+    const emailNote = d.email.sent ? '✅ Email sent to customer.' : '⚠️ '+esc(d.email.reason);
+    document.getElementById('paymentsList').innerHTML =
+      `<div class="alert ok">Approved. ${emailNote}</div>
+       <p class="muted">Access link (one-time, one-device):</p>
+       <div class="link-box">${esc(d.link)}</div>
+       <button class="btn small" onclick="navigator.clipboard.writeText('${d.link}').then(()=>alert('Copied'))">Copy link</button>
+       <p class="muted" style="margin-top:12px"><a href="#" onclick="loadPayments();return false">← Back to pending list</a></p>`;
+    loadSubs();
+  } else alert(d.message||'Failed');
+}
+async function reject(id){
+  if(!confirm('Reject this payment?')) return;
+  await fetch('/api/admin/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paymentId:id})});
+  loadPayments();
+}
+async function loadSubs(){
+  const rows = await fetch('/api/admin/subscriptions').then(r=>r.json());
+  document.getElementById('subsList').innerHTML = rows.length ? `<div class="table-scroll"><table>
+    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Status</th><th>Link opened</th><th>Expires</th></tr>` +
+    rows.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.email)}</td><td>${esc(s.plan_id)}</td>
+      <td><span class="badge ${s.active?'active':'expired'}">${s.active?'active':'expired'}</span></td>
+      <td>${s.opened?'yes':'not yet'}</td>
+      <td>${s.expires_at?new Date(s.expires_at).toLocaleDateString('en-IN'):'lifetime'}</td></tr>`).join('')+'</table></div>'
+    : '<p class="muted" style="margin-top:16px">No subscribers yet.</p>';
+}
+async function loadVideos(){
+  const rows = await fetch('/api/admin/videos').then(r=>r.json());
+  document.getElementById('videosList').innerHTML = (rows.length?`<div class="table-scroll"><table>
+    <tr><th>Title</th><th>Size</th><th>Added</th><th></th></tr>` +
+    rows.map(v=>`<tr><td>${esc(v.title)}</td><td>${(v.size/1048576).toFixed(1)} MB</td>
+      <td>${new Date(v.created_at).toLocaleDateString('en-IN')}</td>
+      <td><button class="btn small ghost" onclick="delVideo(${v.id})">Delete</button></td></tr>`).join('')+'</table></div>'
+    : '<p class="muted" style="margin-top:16px">No videos yet — upload your first one above.</p>');
+}
+async function uploadVideo(){
+  const f = document.getElementById('vFile').files[0];
+  if(!f) return alert('Choose a video file first');
+  const fd = new FormData(); fd.append('video', f);
+  fd.append('title', document.getElementById('vTitle').value || f.name);
+  document.getElementById('uploadMsg').innerHTML = '<p class="muted">Uploading…</p>';
+  const r = await fetch('/api/admin/videos',{method:'POST',body:fd});
+  const d = await r.json();
+  document.getElementById('uploadMsg').innerHTML = d.ok
+    ? '<div class="alert ok">Uploaded ✅</div>' : `<div class="alert err">${esc(d.message||'Upload failed')}</div>`;
+  if(d.ok){ document.getElementById('vTitle').value=''; document.getElementById('vFile').value=''; loadVideos(); }
+}
+async function delVideo(id){
+  if(!confirm('Delete this video?')) return;
+  await fetch('/api/admin/videos/'+id,{method:'DELETE'}); loadVideos();
+}
+// auto-show panel if already logged in
+fetch('/api/admin/payments?status=pending').then(r=>{ if(r.ok){
+  document.getElementById('loginBox').style.display='none';
+  document.getElementById('panel').style.display='block';
+  document.getElementById('logoutBtn').style.display='inline-block'; loadAll(); } }).catch(()=>{});
+</script>
+<script>try{document.getElementById("canonical").href=location.origin+location.pathname;}catch(e){}</script>
+</body></html>

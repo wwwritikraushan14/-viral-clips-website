@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Subscription Plans — VIRAL CLIPS</title><link rel="stylesheet" href="/styles.css">
+<link rel="canonical" href="/" id="canonical">
+<meta name="description" content="Choose your VIRAL CLIPS plan: 1 month ₹299, 3 months ₹799, 6 months ₹1599, 1 year ₹2999, or lifetime ₹9999. Pay securely with UPI.">
+<meta property="og:title" content="Subscription Plans — VIRAL CLIPS">
+<meta property="og:description" content="Choose your VIRAL CLIPS plan: 1 month ₹299, 3 months ₹799, 6 months ₹1599, 1 year ₹2999, or lifetime ₹9999. Pay securely with UPI.">
+<meta property="og:type" content="website"></head>
+<body><div class="wrap">
+  <div class="nav"><div class="logo"><a href="/" style="color:inherit;text-decoration:none">VIRAL <span>CLIPS</span></a></div>
+    <div><a href="/">Home</a></div></div>
+
+  <div class="hero" style="padding-top:24px">
+    <h1>Pick your <span>plan</span></h1>
+    <p>Pay once with UPI. Get your private one-device access link on email after quick verification.</p>
+  </div>
+
+  <div class="grid" id="plans"></div>
+
+  <div class="lock-note">💡 <b>How it works:</b> choose a plan → scan the QR code → pay in your UPI app → enter your UTR / transaction ID → we verify and email your private link. Link works on one device; access ends automatically when the plan expires.</div>
+</div>
+<script>
+const TAGS = { '3m':'POPULAR', 'life':'BEST VALUE' };
+const PER = { '1m':'/month', '3m':'/3 months', '6m':'/6 months', '1y':'/year', 'life':'one-time' };
+fetch('/api/plans').then(r=>r.json()).then(plans=>{
+  document.getElementById('plans').innerHTML = plans.map(p=>`
+    <div class="card plan-card">
+      ${TAGS[p.id]?`<div class="tag">${TAGS[p.id]}</div>`:''}
+      <h3>${p.name}</h3>
+      <div class="price">₹${p.price.toLocaleString('en-IN')} <small>${PER[p.id]}</small></div>
+      <ul><li>All exclusive videos</li><li>Private one-device link</li><li>Email delivery</li>
+      ${p.id==='life'?'<li>Never expires</li>':'<li>Auto access till plan ends</li>'}</ul>
+      <a class="btn" href="/pay.html?plan=${p.id}">Subscribe</a>
+    </div>`).join('');
+});
+</script>
+<script>try{document.getElementById("canonical").href=location.origin+location.pathname;}catch(e){}</script>
+</body></html>
