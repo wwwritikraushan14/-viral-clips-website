@@ -5,7 +5,22 @@
 <meta name="description" content="VIRAL CLIPS admin panel: verify payments, approve subscriptions, manage videos and subscribers.">
 <meta property="og:title" content="Admin — VIRAL CLIPS">
 <meta property="og:description" content="VIRAL CLIPS admin panel: verify payments, approve subscriptions, manage videos and subscribers.">
-<meta property="og:type" content="website"></head>
+<meta property="og:type" content="website">
+<style>
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:16px 0}
+.stat-card{background:#16181d;border:1px solid #2a2e38;border-radius:12px;padding:16px}
+.stat-card .num{font-size:28px;font-weight:800;line-height:1.1}
+.stat-card .lbl{color:#9aa0a6;font-size:13px;margin-top:4px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(80px);background:#22262f;color:#fff;padding:12px 20px;border-radius:10px;opacity:0;transition:all .25s;z-index:2000;max-width:90vw;text-align:center;pointer-events:none}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#toast.ok{border:1px solid #2ecc71}
+#toast.err{border:1px solid #e74c3c}
+.btn.danger{background:#e74c3c;color:#fff}
+.row-actions{white-space:nowrap}
+.row-actions .btn{margin:2px}
+.approved-box{margin:14px 0}
+</style>
+</head>
 <body><div class="wrap">
   <div class="nav"><div class="logo">VIRAL <span>CLIPS</span> <small class="muted">admin</small></div>
     <div><button class="btn small ghost" id="logoutBtn" style="display:none" onclick="logout()">Logout</button></div></div>
@@ -19,13 +34,24 @@
 
   <div id="panel" style="display:none">
     <div class="tabs">
-      <button class="tab on" onclick="showTab('payments',this)">💰 Pending payments <span id="pendingCount"></span></button>
+      <button class="tab on" onclick="showTab('dash',this)">📊 Dashboard</button>
+      <button class="tab" onclick="showTab('payments',this)">💰 Payments <span id="pendingCount"></span></button>
       <button class="tab" onclick="showTab('subs',this)">👥 Subscribers</button>
       <button class="tab" onclick="showTab('videos',this)">🎬 Videos</button>
     </div>
 
-    <div id="tab-payments">
-      <p class="muted" style="font-size:14px">Verify the UTR in your UPI app / bank statement, then approve. The magic link is emailed automatically if SMTP is set up — otherwise copy it and send manually.</p>
+    <div id="tab-dash">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="num" id="stRevenue">–</div><div class="lbl">💵 Revenue</div></div>
+        <div class="stat-card"><div class="num" id="stActive">–</div><div class="lbl">👥 Active subscribers</div></div>
+        <div class="stat-card"><div class="num" id="stPending">–</div><div class="lbl">⏳ Pending payments</div></div>
+        <div class="stat-card"><div class="num" id="stVideos">–</div><div class="lbl">🎬 Videos live</div></div>
+      </div>
+      <p class="muted" style="font-size:14px">Quick flow: approve a payment → copy the magic link → send it to the customer on WhatsApp. Use Subscribers to copy a link again, extend a plan, or cut off access.</p>
+    </div>
+
+    <div id="tab-payments" style="display:none">
+      <p class="muted" style="font-size:14px">Verify the UTR in your UPI app / bank statement, then approve. The magic link is emailed automatically if email is set up — otherwise copy it and send manually.</p>
       <div id="paymentsList"></div>
     </div>
 
@@ -42,96 +68,153 @@
     </div>
   </div>
 </div>
+<div id="toast"></div>
 <script>
 const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let toastT=null;
+function toast(msg, ok=true){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='show '+(ok?'ok':'err');
+  clearTimeout(toastT); toastT=setTimeout(()=>t.className='',2600);
+}
+async function api(path, opts={}){
+  const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.message||d.error||('Request failed ('+r.status+')'));
+  return d;
+}
+// double-tap inline confirm for destructive buttons (no popup dialogs)
+function armConfirm(btn, fn){
+  if(btn.dataset.armed){ delete btn.dataset.armed; btn.classList.remove('danger'); btn.textContent=btn.dataset.label; fn(); return; }
+  btn.dataset.armed='1'; btn.dataset.label=btn.textContent; btn.classList.add('danger'); btn.textContent='Sure?';
+  setTimeout(()=>{ if(btn.dataset.armed){ delete btn.dataset.armed; btn.classList.remove('danger'); btn.textContent=btn.dataset.label; } },3000);
+}
 async function login(){
-  const r = await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({password:document.getElementById('pw').value})});
-  if(r.ok){ document.getElementById('loginBox').style.display='none';
+  try{
+    await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})});
+    document.getElementById('loginBox').style.display='none';
     document.getElementById('panel').style.display='block';
-    document.getElementById('logoutBtn').style.display='inline-block'; loadAll(); }
-  else document.getElementById('loginMsg').innerHTML = '<div class="alert err">Wrong password</div>';
+    document.getElementById('logoutBtn').style.display='inline-block';
+    showTab('dash', document.querySelector('.tab'));
+  }catch(e){ document.getElementById('loginMsg').innerHTML='<div class="alert err">Wrong password</div>'; }
 }
 async function logout(){ await fetch('/api/admin/logout',{method:'POST'}); location.reload(); }
 function showTab(name,el){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on')); el.classList.add('on');
-  ['payments','subs','videos'].forEach(t=>document.getElementById('tab-'+t).style.display = t===name?'block':'none');
+  ['dash','payments','subs','videos'].forEach(t=>document.getElementById('tab-'+t).style.display=t===name?'block':'none');
+  if(name==='dash') loadDash();
+  if(name==='payments') loadPayments();
+  if(name==='subs') loadSubs();
+  if(name==='videos') loadVideos();
 }
-async function loadAll(){ loadPayments(); loadSubs(); loadVideos(); }
-
+// ---------- dashboard ----------
+async function loadDash(){
+  try{
+    const s=await api('/api/admin/stats');
+    document.getElementById('stRevenue').textContent='₹'+Number(s.revenue).toLocaleString('en-IN');
+    document.getElementById('stActive').textContent=s.active;
+    document.getElementById('stPending').textContent=s.pending;
+    document.getElementById('stVideos').textContent=s.videos;
+    document.getElementById('pendingCount').textContent=s.pending?`(${s.pending})`:'';
+  }catch(e){ toast('Could not load stats', false); }
+}
+// ---------- payments ----------
 async function loadPayments(){
-  const rows = await fetch('/api/admin/payments?status=pending').then(r=>r.json());
-  document.getElementById('pendingCount').textContent = rows.length?`(${rows.length})`:'';
+  let rows=[]; try{ rows=await api('/api/admin/payments?status=pending'); }catch(e){ toast('Could not load payments', false); return; }
+  document.getElementById('pendingCount').textContent=rows.length?`(${rows.length})`:'';
   document.getElementById('paymentsList').innerHTML = rows.length ? `<div class="table-scroll"><table>
-    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Amount</th><th>UTR</th><th>When</th><th></th></tr>` +
+    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Amount</th><th>UTR</th><th>When</th><th></th></tr>`+
     rows.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.email)}</td><td>${esc(p.plan_id)}</td>
       <td>₹${p.amount}</td><td><code>${esc(p.utr)}</code></td>
       <td>${new Date(p.created_at).toLocaleString('en-IN')}</td>
-      <td style="white-space:nowrap"><button class="btn small" onclick="approve(${p.id})">Approve</button>
-      <button class="btn small ghost" onclick="reject(${p.id})">Reject</button></td></tr>`).join('')+'</table></div>'
+      <td class="row-actions"><button class="btn small" onclick="approve(${p.id})">Approve</button>
+      <button class="btn small ghost" onclick="armConfirm(this,()=>reject(${p.id}))">Reject</button></td></tr>`).join('')+'</table></div>'
     : '<p class="muted" style="margin-top:16px">No pending payments. 🎉</p>';
 }
 async function approve(id){
-  if(!confirm('Approve this payment and generate the access link?')) return;
-  const r = await fetch('/api/admin/approve',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({paymentId:id})});
-  const d = await r.json();
-  if(d.ok){
-    const emailNote = d.email.sent ? '✅ Email sent to customer.' : '⚠️ '+esc(d.email.reason);
-    document.getElementById('paymentsList').innerHTML =
-      `<div class="alert ok">Approved. ${emailNote}</div>
+  try{
+    const d=await api('/api/admin/approve',{method:'POST',body:JSON.stringify({paymentId:id})});
+    const emailNote=d.email.sent?'✅ Email sent to customer.':'⚠️ '+d.email.reason;
+    document.getElementById('paymentsList').innerHTML=
+      `<div class="alert ok approved-box">Approved. ${esc(emailNote)}</div>
        <p class="muted">Access link (one-time, one-device):</p>
        <div class="link-box">${esc(d.link)}</div>
-       <button class="btn small" onclick="navigator.clipboard.writeText('${d.link}').then(()=>alert('Copied'))">Copy link</button>
+       <button class="btn small" onclick="copyText('${d.link}',this)">Copy link</button>
        <p class="muted" style="margin-top:12px"><a href="#" onclick="loadPayments();return false">← Back to pending list</a></p>`;
-    loadSubs();
-  } else alert(d.message||'Failed');
+    toast('Payment approved ✅'); loadDash();
+  }catch(e){ toast(e.message,false); }
 }
 async function reject(id){
-  if(!confirm('Reject this payment?')) return;
-  await fetch('/api/admin/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paymentId:id})});
-  loadPayments();
+  try{ await api('/api/admin/reject',{method:'POST',body:JSON.stringify({paymentId:id})}); toast('Payment rejected'); loadPayments(); loadDash(); }
+  catch(e){ toast(e.message,false); }
 }
+function copyText(t,btn){
+  navigator.clipboard.writeText(t).then(()=>toast('Copied to clipboard ✅')).catch(()=>toast('Copy failed — long-press the link',false));
+}
+// ---------- subscribers ----------
 async function loadSubs(){
-  const rows = await fetch('/api/admin/subscriptions').then(r=>r.json());
+  let rows=[]; try{ rows=await api('/api/admin/subscriptions'); }catch(e){ toast('Could not load subscribers',false); return; }
   document.getElementById('subsList').innerHTML = rows.length ? `<div class="table-scroll"><table>
-    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Status</th><th>Link opened</th><th>Expires</th></tr>` +
+    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Status</th><th>Opened</th><th>Expires</th><th></th></tr>`+
     rows.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.email)}</td><td>${esc(s.plan_id)}</td>
       <td><span class="badge ${s.active?'active':'expired'}">${s.active?'active':'expired'}</span></td>
       <td>${s.opened?'yes':'not yet'}</td>
-      <td>${s.expires_at?new Date(s.expires_at).toLocaleDateString('en-IN'):'lifetime'}</td></tr>`).join('')+'</table></div>'
+      <td>${s.expires_at?new Date(s.expires_at).toLocaleDateString('en-IN'):'lifetime'}</td>
+      <td class="row-actions">
+        <button class="btn small ghost" onclick="copySubLink(${s.id})">Copy link</button>
+        <button class="btn small ghost" onclick="extendSub(${s.id},1)">+1 mo</button>
+        <button class="btn small ghost" onclick="armConfirm(this,()=>revokeSub(${s.id}))">Revoke</button>
+      </td></tr>`).join('')+'</table></div>'
     : '<p class="muted" style="margin-top:16px">No subscribers yet.</p>';
 }
+async function copySubLink(id){
+  try{ const d=await api('/api/admin/subscriptions/'+id+'/link'); copyText(d.link); }
+  catch(e){ toast(e.message,false); }
+}
+async function extendSub(id,months){
+  try{
+    const d=await api('/api/admin/subscriptions/'+id+'/extend',{method:'POST',body:JSON.stringify({months})});
+    toast(d.lifetime?'Already lifetime — nothing to extend':'Extended +'+months+' month ✅');
+    loadSubs(); loadDash();
+  }catch(e){ toast(e.message,false); }
+}
+async function revokeSub(id){
+  try{ await api('/api/admin/subscriptions/'+id,{method:'DELETE'}); toast('Access revoked'); loadSubs(); loadDash(); }
+  catch(e){ toast(e.message,false); }
+}
+// ---------- videos ----------
 async function loadVideos(){
-  const rows = await fetch('/api/admin/videos').then(r=>r.json());
-  document.getElementById('videosList').innerHTML = (rows.length?`<div class="table-scroll"><table>
-    <tr><th>Title</th><th>Size</th><th>Added</th><th></th></tr>` +
+  let rows=[]; try{ rows=await api('/api/admin/videos'); }catch(e){ toast('Could not load videos',false); return; }
+  document.getElementById('videosList').innerHTML=(rows.length?`<div class="table-scroll"><table>
+    <tr><th>Title</th><th>Size</th><th>Added</th><th></th></tr>`+
     rows.map(v=>`<tr><td>${esc(v.title)}</td><td>${(v.size/1048576).toFixed(1)} MB</td>
       <td>${new Date(v.created_at).toLocaleDateString('en-IN')}</td>
-      <td><button class="btn small ghost" onclick="delVideo(${v.id})">Delete</button></td></tr>`).join('')+'</table></div>'
+      <td><button class="btn small ghost" onclick="armConfirm(this,()=>delVideo(${v.id}))">Delete</button></td></tr>`).join('')+'</table></div>'
     : '<p class="muted" style="margin-top:16px">No videos yet — upload your first one above.</p>');
 }
 async function uploadVideo(){
-  const f = document.getElementById('vFile').files[0];
-  if(!f) return alert('Choose a video file first');
-  const fd = new FormData(); fd.append('video', f);
-  fd.append('title', document.getElementById('vTitle').value || f.name);
-  document.getElementById('uploadMsg').innerHTML = '<p class="muted">Uploading…</p>';
-  const r = await fetch('/api/admin/videos',{method:'POST',body:fd});
-  const d = await r.json();
-  document.getElementById('uploadMsg').innerHTML = d.ok
-    ? '<div class="alert ok">Uploaded ✅</div>' : `<div class="alert err">${esc(d.message||'Upload failed')}</div>`;
-  if(d.ok){ document.getElementById('vTitle').value=''; document.getElementById('vFile').value=''; loadVideos(); }
+  const f=document.getElementById('vFile').files[0];
+  if(!f){ toast('Choose a video file first',false); return; }
+  const fd=new FormData(); fd.append('video',f); fd.append('title',document.getElementById('vTitle').value||f.name);
+  document.getElementById('uploadMsg').innerHTML='<p class="muted">Uploading…</p>';
+  try{
+    const r=await fetch('/api/admin/videos',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.message||'Upload failed');
+    document.getElementById('uploadMsg').innerHTML='<div class="alert ok">Uploaded ✅</div>';
+    document.getElementById('vTitle').value=''; document.getElementById('vFile').value='';
+    toast('Video uploaded ✅'); loadVideos(); loadDash();
+  }catch(e){ document.getElementById('uploadMsg').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
 }
 async function delVideo(id){
-  if(!confirm('Delete this video?')) return;
-  await fetch('/api/admin/videos/'+id,{method:'DELETE'}); loadVideos();
+  try{ await api('/api/admin/videos/'+id,{method:'DELETE'}); toast('Video deleted'); loadVideos(); loadDash(); }
+  catch(e){ toast(e.message,false); }
 }
 // auto-show panel if already logged in
-fetch('/api/admin/payments?status=pending').then(r=>{ if(r.ok){
+fetch('/api/admin/stats').then(r=>{ if(r.ok){
   document.getElementById('loginBox').style.display='none';
   document.getElementById('panel').style.display='block';
-  document.getElementById('logoutBtn').style.display='inline-block'; loadAll(); } }).catch(()=>{});
+  document.getElementById('logoutBtn').style.display='inline-block'; loadDash(); } }).catch(()=>{});
 </script>
 <script>try{document.getElementById("canonical").href=location.origin+location.pathname;}catch(e){}</script>
 </body></html>
