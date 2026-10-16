@@ -1,0 +1,18 @@
+VIRAL CLIPS — Instagram Bio-Link Page
+======================================
+
+WHAT IT IS:
+A mobile-first landing page made for Instagram traffic.
+Put this link in your Instagram bio:
+  https://viral-clips-website-production.up.railway.app/insta.html
+(Replace with your actual domain if different.)
+
+Visitors get: big Unlock button, teaser photos, plans from
+Rs.299, how-it-works steps, FAQ, and WhatsApp chat.
+
+UPLOAD:
+1. GitHub -> repo -> public/ -> Add file -> Upload files ->
+   choose insta.html -> Commit changes.
+2. Railway GREEN.
+3. Open the /insta.html link on your phone to check it.
+4. Paste that link into your Instagram bio.
