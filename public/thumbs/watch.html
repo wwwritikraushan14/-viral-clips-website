@@ -1,0 +1,56 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watch Exclusive Videos — VIRAL CLIPS</title><link rel="stylesheet" href="/styles.css">
+<link rel="canonical" href="/" id="canonical">
+<meta name="description" content="Watch your exclusive VIRAL CLIPS videos. Members-only streaming on your private one-device access link.">
+<meta property="og:title" content="Watch Exclusive Videos — VIRAL CLIPS">
+<meta property="og:description" content="Watch your exclusive VIRAL CLIPS videos. Members-only streaming on your private one-device access link.">
+<meta property="og:type" content="website"></head>
+<body><div class="wrap">
+  <div class="nav"><div class="logo">VIRAL <span>CLIPS</span></div>
+    <div id="expiry"></div></div>
+
+  <div id="noAccess" style="display:none" class="center"><div class="card" style="text-align:center;max-width:480px">
+    <h1>🔒 Members only</h1><p class="muted" style="margin:14px 0">Open your private access link from email to watch.</p>
+    <a class="btn" href="/plans.html">Get access</a></div></div>
+
+  <div id="expired" style="display:none" class="center"><div class="card" style="text-align:center;max-width:480px">
+    <h1>⌛ Subscription ended</h1><p class="muted" style="margin:14px 0">Your plan has expired. Renew to keep watching.</p>
+    <a class="btn" href="/plans.html">Renew now</a></div></div>
+
+  <div id="app" style="display:none">
+    <h2 class="section-title" style="margin-top:8px">Your videos</h2>
+    <div class="player-wrap" id="playerWrap" style="display:none">
+      <h3 id="nowPlaying" style="margin-bottom:10px"></h3>
+      <video id="player" controls playsinline controlsList="nodownload"></video>
+      <p class="muted" style="font-size:13px;margin-top:8px">🔒 Your link is locked to this device. Downloads are disabled.</p>
+    </div>
+    <div class="video-grid" id="videos"></div>
+  </div>
+</div>
+<script>
+const esc = s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function init(){
+  const me = await fetch('/api/me').then(r=>r.json()).catch(()=>null);
+  if(!me || me.error==='no_access'){ document.getElementById('noAccess').style.display='flex'; return; }
+  if(me.error==='expired'){ document.getElementById('expired').style.display='flex'; return; }
+  document.getElementById('app').style.display='block';
+  document.getElementById('expiry').innerHTML =
+    `<span class="expiry-pill">👋 ${esc(me.name)} · <b>${me.daysLeft===null?'Lifetime access':me.daysLeft+' day'+(me.daysLeft===1?'':'s')+' left'}</b></span>`;
+  const videos = await fetch('/api/videos').then(r=>r.json());
+  document.getElementById('videos').innerHTML = videos.length ? videos.map(v=>`
+    <div class="video-card" onclick="playVideo(${v.id},'${esc(v.title)}')">
+      <div class="video-thumb">▶️</div><h4>${esc(v.title)}</h4></div>`).join('')
+    : '<p class="muted">No videos yet — new drops coming soon.</p>';
+}
+function playVideo(id,title){
+  const w = document.getElementById('playerWrap'); w.style.display='block';
+  document.getElementById('nowPlaying').textContent = title;
+  const p = document.getElementById('player'); p.src = '/api/stream/'+id; p.play().catch(()=>{});
+  w.scrollIntoView({behavior:'smooth'});
+}
+init();
+</script>
+<script>try{document.getElementById("canonical").href=location.origin+location.pathname;}catch(e){}</script>
+<a class="wa-float" href="https://wa.me/916362930626?text=Hi!%20I%20need%20help%20with%20my%20VIRAL%20CLIPS%20subscription" target="_blank" rel="noopener" aria-label="Chat with customer support on WhatsApp"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.536h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
+</body></html>
