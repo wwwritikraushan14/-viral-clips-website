@@ -35,9 +35,14 @@
   <div class="nav"><div class="logo">VIRAL <span>CLIPS</span></div>
     <div><a href="/plans.html">Plans</a><a class="btn small" href="/plans.html">Subscribe</a></div></div>
 
-  <div class="hero">
-    <div class="bubbles" id="bubbles"></div>
+  <div class="hero hero-cine">
+    <div class="cine-bg" id="cineBg" aria-hidden="true">
+      <div class="cine-track cine-track-top"><div class="cine-set"><img src="/thumbs/thumb-1.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-2.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-3.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-4.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-5.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-6.jpg" alt="" loading="lazy"></div><div class="cine-set"><img src="/thumbs/thumb-1.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-2.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-3.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-4.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-5.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-6.jpg" alt="" loading="lazy"></div></div>
+      <div class="cine-track cine-track-bot"><div class="cine-set"><img src="/thumbs/thumb-7.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-8.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-9.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-10.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-11.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-1.jpg" alt="" loading="lazy"></div><div class="cine-set"><img src="/thumbs/thumb-7.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-8.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-9.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-10.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-11.jpg" alt="" loading="lazy"><img src="/thumbs/thumb-1.jpg" alt="" loading="lazy"></div></div>
+      <div class="cine-shade"></div>
+    </div>
     <div class="hero-inner">
+      <div class="eyebrow">Members-only exclusives</div>
       <h1 class="hero-title">Exclusive videos.<br><span>One subscription.</span></h1>
       <p class="hero-sub">Premium video content you won't find anywhere else. Pick a plan, pay with UPI, get your private one-device access link on email.</p>
       <a class="btn btn-glow" href="/plans.html">See Plans &amp; Subscribe</a>
@@ -48,10 +53,9 @@
         <div><b class="count" data-count="5">0</b><span>plans, lifetime too</span></div>
       </div>
     </div>
-    <div class="wave-wrap"><svg class="wave wave1" viewBox="0 0 1200 60" preserveAspectRatio="none"><path d="M0,30 C200,60 400,0 600,30 C800,60 1000,0 1200,30 L1200,60 L0,60 Z"/></svg><svg class="wave wave2" viewBox="0 0 1200 60" preserveAspectRatio="none"><path d="M0,30 C200,60 400,0 600,30 C800,60 1000,0 1200,30 L1200,60 L0,60 Z"/></svg></div>
   </div>
 
-  <h2 class="section-title reveal">🔥 Fresh exclusives</h2>
+  <h2 class="section-title reveal"><span class="eyebrow">Members only</span><br>🔥 Fresh exclusives</h2>
   <p class="muted reveal">A taste of what's waiting inside. Full videos unlock after subscription.</p>
   <div class="gallery">
     <div class="g-card reveal" onclick="location.href='/plans.html'"><img src="/thumbs/thumb-1.jpg" alt="Exclusive drop 1" loading="lazy"><span class="g-lock">🔒</span><div class="g-shine"></div><div class="g-meta"><h4>Exclusive Drop 01</h4><span class="g-tag">Members only</span></div></div>
@@ -67,7 +71,7 @@
     <div class="g-card reveal" onclick="location.href='/plans.html'"><img src="/thumbs/thumb-11.jpg" alt="Exclusive drop 11" loading="lazy"><span class="g-lock">🔒</span><div class="g-shine"></div><div class="g-meta"><h4>Exclusive Drop 11</h4><span class="g-tag">Members only</span></div></div>
   </div>
 
-  <h2 class="section-title reveal">How it works</h2>
+  <h2 class="section-title reveal"><span class="eyebrow">Simple &amp; secure</span><br>How it works</h2>
   <div class="steps">
     <div class="step reveal"><b>1</b>Choose your plan — 1 month to lifetime.</div>
     <div class="step reveal"><b>2</b>Scan the QR &amp; pay with any UPI app.</div>
@@ -104,7 +108,6 @@ function makeBubbles(id, n){
     box.appendChild(b);
   }
 }
-makeBubbles('bubbles', 22);
 makeBubbles('bubbles2', 12);
 
 // ---- slide-in on scroll ----
@@ -121,6 +124,22 @@ document.querySelectorAll('.reveal').forEach((el,i)=>{
   el.dataset.d = (i%3)*90;   // stagger
   io.observe(el);
 });
+
+// ---- cinematic hero parallax ----
+(function(){
+  var bg=document.getElementById('cineBg');
+  if(!bg||window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  var ticking=false;
+  function onScroll(){
+    if(ticking) return; ticking=true;
+    requestAnimationFrame(function(){
+      var y=Math.min(window.scrollY||0, window.innerHeight||800);
+      bg.style.transform='translate3d(0,'+(y*0.22).toFixed(1)+'px,0)';
+      ticking=false;
+    });
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});
+})();
 
 // ---- tap ripple on buttons & cards ----
 document.addEventListener('pointerdown', e=>{

@@ -116,3 +116,33 @@ code{background:#0c0e13;padding:4px 8px;border-radius:6px;font-size:13px}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 }
+
+/* ============ CINEMATIC v2 — dramatic hero, calm premium body ============ */
+/* hero */
+.hero-cine{min-height:84vh;display:flex;align-items:center;justify-content:center;padding:110px 24px 130px}
+.cine-bg{position:absolute;inset:0;overflow:hidden;border-radius:inherit;will-change:transform}
+.cine-track{position:absolute;left:-6%;width:112%;display:flex;height:47%}
+.cine-track-top{top:1%;animation:cineDrift 75s linear infinite}
+.cine-track-bot{bottom:1%;animation:cineDrift 95s linear infinite reverse}
+.cine-set{display:flex;gap:14px;padding-right:14px}
+.cine-set img{height:100%;aspect-ratio:3/4;object-fit:cover;border-radius:12px;flex:none;filter:blur(7px) brightness(.48) saturate(1.2);opacity:.9}
+@keyframes cineDrift{to{transform:translateX(-50%)}}
+.cine-shade{position:absolute;inset:0;background:
+  linear-gradient(180deg,rgba(7,8,12,.85) 0%,rgba(7,8,12,.5) 32%,rgba(7,8,12,.55) 62%,var(--px-bg) 100%),
+  radial-gradient(900px 420px at 50% 36%,rgba(255,45,85,.16),transparent 65%)}
+.hero-cine .hero-inner{max-width:740px}
+.hero-cine .eyebrow{animation:heroIn 1s cubic-bezier(.2,.8,.2,1) both}
+.hero-cine .hero-title{font-size:clamp(44px,8.5vw,80px)}
+/* eyebrow kicker — the clean-premium signature */
+.eyebrow{display:inline-flex;align-items:center;gap:10px;font-size:11px;font-weight:800;letter-spacing:2.6px;text-transform:uppercase;color:var(--px-gold);margin-bottom:14px}
+.eyebrow::before{content:'';width:26px;height:2px;background:var(--px-red);border-radius:2px}
+.section-title{margin:56px 0 10px}
+/* calmer cards */
+.g-card{transition:transform .3s cubic-bezier(.2,.8,.2,1),border-color .3s,box-shadow .3s}
+.step{transition:transform .25s,border-color .25s,box-shadow .25s}
+.step:hover{box-shadow:0 10px 26px rgba(0,0,0,.35)}
+/* cinematic reduced-motion */
+@media (prefers-reduced-motion:reduce){
+  .cine-track{animation:none!important}
+  .hero-cine .eyebrow{animation:none!important}
+}

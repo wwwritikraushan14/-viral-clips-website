@@ -1,0 +1,23 @@
+VIRAL CLIPS — Cinematic + Clean Premium v2 (10 minutes)
+========================================================
+
+WHAT'S NEW:
+- Cinematic hero: your teaser photos drift slowly behind the
+  headline like a movie backdrop (blurred, dark, classy),
+  with gentle parallax when you scroll.
+- Clean premium details: gold "eyebrow" labels on sections,
+  calmer cards, refined spacing.
+- Cheap effects removed: no more floating bubbles or waves
+  in the hero. Respects the phone's "reduce motion" setting.
+
+FILES IN THIS ZIP (upload these ONLY — no server.js inside):
+index.html, plans.html, pay.html, watch.html,
+privacy.html, terms.html, admin.html, premium.css
+
+UPLOAD:
+1. GitHub -> repo -> public folder.
+2. Add file -> Upload files -> select ALL 8 files above.
+3. Commit changes. Wait for Railway GREEN.
+4. Check the live site in INCOGNITO on your phone.
+
+Your server.js and email setup are NOT touched by this update.
