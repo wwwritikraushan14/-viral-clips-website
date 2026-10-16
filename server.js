@@ -20,7 +20,7 @@ const PAYEE_NAME = process.env.PAYEE_NAME || 'VIRAL CLIPS';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me-now';
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const IS_HTTPS = BASE_URL.startsWith('https://'); // secure cookies only over HTTPS
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const PLANS = [
@@ -32,27 +32,14 @@ const PLANS = [
 ];
 const planById = (id) => PLANS.find((p) => p.id === id);
 
-// ---------------- mailer (optional) ----------------
-let mailer = null;
-if (process.env.SMTP_HOST) {
-  mailer = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  });
-}
-
+// ---------------- email via Brevo HTTP API ----------------
+// (Gmail SMTP is blocked on Railway's network, so we send over HTTPS instead.)
 async function sendAccessEmail(to, name, plan, link, expiresAt) {
-  if (!mailer) return { sent: false, reason: 'SMTP not configured' };
+  if (!process.env.BREVO_API_KEY) return { sent: false, reason: 'BREVO_API_KEY not configured' };
   const expiryLine = expiresAt
     ? `Your access is valid until ${new Date(expiresAt).toLocaleString('en-IN')}.`
     : 'Your access never expires (Lifetime plan).';
-  await mailer.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
-    to,
-    subject: `Your VIRAL CLIPS access link (${plan.name})`,
-    text:
+  const text =
 `Hi ${name},
 
 Thanks for subscribing to VIRAL CLIPS!
@@ -65,8 +52,21 @@ ${expiryLine}
 Do not share this link. If opened on a different device, access will be blocked.
 
 Enjoy!
-— Team VIRAL CLIPS`,
+— Team VIRAL CLIPS`;
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'api-key': process.env.BREVO_API_KEY },
+    body: JSON.stringify({
+      sender: { email: process.env.SMTP_FROM || process.env.SMTP_USER, name: 'VIRAL CLIPS' },
+      to: [{ email: to, name }],
+      subject: `Your VIRAL CLIPS access link (${plan.name})`,
+      textContent: text,
+    }),
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    return { sent: false, reason: 'Email failed: ' + body.slice(0, 160) };
+  }
   return { sent: true };
 }
 
@@ -328,6 +328,40 @@ app.get('/api/admin/subscriptions', requireAdmin, (req, res) => {
     active: r.expires_at === null || r.expires_at > Date.now(),
     opened: r.used_at !== null,
   })));
+});
+
+// Dashboard stats.
+app.get('/api/admin/stats', requireAdmin, (req, res) => {
+  const revenue = db.prepare("SELECT COALESCE(SUM(amount),0) AS r FROM payments WHERE status='approved'").get().r;
+  const pending = db.prepare("SELECT COUNT(*) AS c FROM payments WHERE status='pending'").get().c;
+  const subs = db.prepare('SELECT expires_at FROM subscriptions').all();
+  const active = subs.filter((s) => s.expires_at === null || s.expires_at > Date.now()).length;
+  const videos = db.prepare('SELECT COUNT(*) AS c FROM videos').get().c;
+  res.json({ revenue, pending, active, totalSubs: subs.length, videos });
+});
+
+// Revoke a subscriber's access immediately.
+app.delete('/api/admin/subscriptions/:id', requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM subscriptions WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// Extend a subscription by N months (1-24).
+app.post('/api/admin/subscriptions/:id/extend', requireAdmin, (req, res) => {
+  const months = Math.max(1, Math.min(24, Number(req.body?.months) || 1));
+  const sub = db.prepare('SELECT expires_at FROM subscriptions WHERE id=?').get(req.params.id);
+  if (!sub) return res.status(404).json({ error: 'not_found' });
+  if (sub.expires_at === null) return res.json({ ok: true, lifetime: true });
+  const base = sub.expires_at > Date.now() ? sub.expires_at : Date.now();
+  db.prepare('UPDATE subscriptions SET expires_at=? WHERE id=?').run(base + months * 30 * 86400000, req.params.id);
+  res.json({ ok: true });
+});
+
+// Get a subscriber's magic link again (copy / resend manually).
+app.get('/api/admin/subscriptions/:id/link', requireAdmin, (req, res) => {
+  const sub = db.prepare('SELECT token FROM subscriptions WHERE id=?').get(req.params.id);
+  if (!sub) return res.status(404).json({ error: 'not_found' });
+  res.json({ link: `${BASE_URL}/access/${sub.token}` });
 });
 
 // Video upload (admin).
