@@ -406,5 +406,5 @@ app.listen(PORT, () => {
   console.log(`VIRAL CLIPS running on ${BASE_URL}`);
   console.log(`Plans: ${PLANS.map((p) => `${p.name} ₹${p.price}`).join(' | ')}`);
   if (ADMIN_PASSWORD === 'change-me-now') console.log('⚠ Set ADMIN_PASSWORD env var before going live.');
-  if (!mailer) console.log('⚠ SMTP not configured — magic links will be shown in the admin panel to send manually.');
+  if (!process.env.BREVO_API_KEY) console.log('⚠ Email not configured — magic links will be shown in the admin panel to send manually.');
 });
