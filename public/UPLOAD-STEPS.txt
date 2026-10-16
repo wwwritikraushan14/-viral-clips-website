@@ -1,0 +1,30 @@
+VIRAL CLIPS — Premium Look Upload (5 minutes)
+=============================================
+
+FILES INSIDE THIS ZIP:
+- public/ folder: index.html, plans.html, pay.html, watch.html,
+  privacy.html, terms.html, admin.html, premium.css
+- server.js (repo root — adds Google Fonts permission)
+
+UPLOAD ON GITHUB (github.com/wwwritikraushan14/viral-clips-website):
+
+1. Open the repo, go into the public folder.
+2. For EACH of these files, open it, click the pencil icon (Edit),
+   select ALL + paste the file from this zip, then Commit changes:
+   index.html, plans.html, pay.html, watch.html,
+   privacy.html, terms.html, admin.html, premium.css
+   (If premium.css is not listed yet, use Add file > Upload files.)
+3. Go back to the repo home page. Open server.js, edit, paste the
+   server.js from this zip, Commit changes.
+4. Open Railway -> check the deployment turns GREEN.
+5. Open the live site in an INCOGNITO/private tab (phone too).
+   premium.css must open (no 404).
+
+WHAT THIS GIVES YOU:
+- Dark cinematic premium look (Netflix-style colors, glass nav,
+  glowing hero, pricing cards, pro footer, trust badges)
+- Clean animations: WhatsApp ping, hero headline shimmer,
+  smooth card hovers. Sparkle overload REMOVED.
+- Respects "reduce motion" phone setting.
+- Nothing else changed: payments, admin, magic links, watch page
+  all work exactly as before.
