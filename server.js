@@ -32,13 +32,17 @@ const PLANS = [
 ];
 const planById = (id) => PLANS.find((p) => p.id === id);
 
-// ---------------- email via Brevo HTTP API ----------------
+// ---------------- email via Resend or Brevo HTTP API ----------------
 // (Gmail SMTP is blocked on Railway's network, so we send over HTTPS instead.)
+// Set RESEND_API_KEY (recommended) or BREVO_API_KEY in Railway variables.
 async function sendAccessEmail(to, name, plan, link, expiresAt) {
-  if (!process.env.BREVO_API_KEY) return { sent: false, reason: 'BREVO_API_KEY not configured' };
+  if (!process.env.RESEND_API_KEY && !process.env.BREVO_API_KEY) {
+    return { sent: false, reason: 'Email not configured — copy the link and send it manually.' };
+  }
   const expiryLine = expiresAt
     ? `Your access is valid until ${new Date(expiresAt).toLocaleString('en-IN')}.`
     : 'Your access never expires (Lifetime plan).';
+  const subject = `Your VIRAL CLIPS access link (${plan.name})`;
   const text =
 `Hi ${name},
 
@@ -53,13 +57,34 @@ Do not share this link. If opened on a different device, access will be blocked.
 
 Enjoy!
 — Team VIRAL CLIPS`;
+
+  // ---- Resend (preferred) ----
+  if (process.env.RESEND_API_KEY) {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
+      body: JSON.stringify({
+        from: process.env.RESEND_FROM || 'VIRAL CLIPS <onboarding@resend.dev>',
+        to: [to],
+        subject,
+        text,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return { sent: false, reason: 'Email failed: ' + body.slice(0, 160) };
+    }
+    return { sent: true };
+  }
+
+  // ---- Brevo fallback ----
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'api-key': process.env.BREVO_API_KEY },
     body: JSON.stringify({
       sender: { email: process.env.SMTP_FROM || process.env.SMTP_USER, name: 'VIRAL CLIPS' },
       to: [{ email: to, name }],
-      subject: `Your VIRAL CLIPS access link (${plan.name})`,
+      subject,
       textContent: text,
     }),
   });
@@ -132,8 +157,8 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   // CSP: allow self + inline (pages use inline scripts/styles); videos from self; QR is data: URL
   res.setHeader('Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-    "img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'");
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'");
   next();
 });
 
@@ -406,5 +431,5 @@ app.listen(PORT, () => {
   console.log(`VIRAL CLIPS running on ${BASE_URL}`);
   console.log(`Plans: ${PLANS.map((p) => `${p.name} ₹${p.price}`).join(' | ')}`);
   if (ADMIN_PASSWORD === 'change-me-now') console.log('⚠ Set ADMIN_PASSWORD env var before going live.');
-  if (!process.env.BREVO_API_KEY) console.log('⚠ Email not configured — magic links will be shown in the admin panel to send manually.');
+  if (!process.env.RESEND_API_KEY && !process.env.BREVO_API_KEY) console.log('⚠ Email not configured — magic links will be shown in the admin panel to send manually.');
 });
