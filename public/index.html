@@ -125,6 +125,27 @@ document.querySelectorAll('.reveal').forEach((el,i)=>{
   io.observe(el);
 });
 
+// ---- dynamic homepage teasers (photos uploaded via admin panel) ----
+// If the admin has uploaded teaser photos, they replace the built-in gallery.
+(async function(){
+  try{
+    const rows = await fetch('/api/teasers').then(r=>r.json());
+    if(!Array.isArray(rows) || !rows.length) return;
+    const g = document.querySelector('.gallery');
+    if(!g) return;
+    const escT = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    g.innerHTML = rows.map((t,i)=>`
+      <div class="g-card reveal" data-d="${(i%3)*90}" onclick="location.href='/plans.html'">
+        <img src="/api/teaser-img/${t.id}" alt="${escT(t.title)}" loading="lazy">
+        <span class="g-lock">🔒</span><div class="g-shine"></div>
+        <div class="g-meta"><h4>${escT(t.title)}</h4><span class="g-tag">Members only</span></div>
+      </div>`).join('');
+    g.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+    const c = document.querySelector('.hero .count');
+    if(c){ c.dataset.count = rows.length; c.textContent = rows.length; }
+  }catch(e){ /* keep built-in gallery */ }
+})();
+
 // ---- cinematic hero parallax ----
 (function(){
   var bg=document.getElementById('cineBg');
