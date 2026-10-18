@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
   plan_id TEXT NOT NULL,
   amount INTEGER NOT NULL,
   utr TEXT NOT NULL,
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   payment_id INTEGER NOT NULL,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
   plan_id TEXT NOT NULL,
   token TEXT NOT NULL UNIQUE,               -- the magic link token
   used_at INTEGER,                          -- NULL until first opened
@@ -53,5 +55,11 @@ CREATE TABLE IF NOT EXISTS teasers (
   created_at INTEGER NOT NULL
 );
 `);
+
+// migration (2026-10-18): phone column for WhatsApp delivery
+for (const t of ['payments', 'subscriptions']) {
+  try { db.exec(`ALTER TABLE ${t} ADD COLUMN phone TEXT NOT NULL DEFAULT ''`); }
+  catch (e) { /* column already exists */ }
+}
 
 module.exports = db;

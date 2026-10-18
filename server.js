@@ -32,11 +32,39 @@ const PLANS = [
 ];
 const planById = (id) => PLANS.find((p) => p.id === id);
 
-// ---------------- email via Resend or Brevo HTTP API ----------------
+// ---------------- email via Gmail API, Resend or Brevo (HTTPS) ----------------
 // (Gmail SMTP is blocked on Railway's network, so we send over HTTPS instead.)
-// Set RESEND_API_KEY (recommended) or BREVO_API_KEY in Railway variables.
+// Set GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET + GMAIL_REFRESH_TOKEN + GMAIL_FROM
+// for free Gmail API sending (500/day), or RESEND_API_KEY, or BREVO_API_KEY.
+async function sendViaGmailApi(to, subject, text) {
+  const id = process.env.GMAIL_CLIENT_ID, sec = process.env.GMAIL_CLIENT_SECRET,
+        rt = process.env.GMAIL_REFRESH_TOKEN, from = process.env.GMAIL_FROM;
+  if (!id || !sec || !rt || !from) return null; // not configured — skip
+  const tokRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: id, client_secret: sec, refresh_token: rt, grant_type: 'refresh_token' }),
+  });
+  if (!tokRes.ok) return { sent: false, reason: 'Gmail token refresh failed' };
+  const { access_token } = await tokRes.json();
+  const raw = Buffer.from(
+    `From: VIRAL CLIPS <${from}>\r\nTo: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}`,
+    'utf8'
+  ).toString('base64url');
+  const sendRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw }),
+  });
+  if (!sendRes.ok) {
+    const body = await sendRes.text().catch(() => '');
+    return { sent: false, reason: 'Gmail send failed: ' + body.slice(0, 160) };
+  }
+  return { sent: true };
+}
+
 async function sendAccessEmail(to, name, plan, link, expiresAt) {
-  if (!process.env.RESEND_API_KEY && !process.env.BREVO_API_KEY) {
+  if (!process.env.GMAIL_REFRESH_TOKEN && !process.env.RESEND_API_KEY && !process.env.BREVO_API_KEY) {
     return { sent: false, reason: 'Email not configured — copy the link and send it manually.' };
   }
   const expiryLine = expiresAt
@@ -58,7 +86,11 @@ Do not share this link. If opened on a different device, access will be blocked.
 Enjoy!
 — Team VIRAL CLIPS`;
 
-  // ---- Resend (preferred) ----
+  // ---- Gmail API (free, 500/day, best deliverability) ----
+  const gmailRes = await sendViaGmailApi(to, subject, text);
+  if (gmailRes) return gmailRes;
+
+  // ---- Resend (preferred third-party) ----
   if (process.env.RESEND_API_KEY) {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -198,20 +230,24 @@ app.get('/api/qr/:planId', async (req, res) => {
 
 // Customer submits payment proof after paying via UPI app.
 app.post('/api/payments', rateLimit({ windowMs: 60000, max: 10 }), (req, res) => {
-  const { name, email, planId, utr } = req.body || {};
+  const { name, email, phone, planId, utr } = req.body || {};
   const plan = planById(planId);
-  if (!name || !email || !plan || !utr) {
-    return res.status(400).json({ error: 'missing_fields', message: 'Name, email, plan and UTR / transaction ID are required.' });
+  if (!name || !email || !phone || !plan || !utr) {
+    return res.status(400).json({ error: 'missing_fields', message: 'Name, email, phone, plan and UTR / transaction ID are required.' });
   }
-  if (String(name).length > 80 || String(utr).length > 40 || String(email).length > 120) {
+  if (String(name).length > 80 || String(utr).length > 40 || String(email).length > 120 || String(phone).length > 20) {
     return res.status(400).json({ error: 'too_long', message: 'One of the fields is too long.' });
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'bad_email', message: 'Please enter a valid email address.' });
   }
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 13) {
+    return res.status(400).json({ error: 'bad_phone', message: 'Please enter a valid 10-digit mobile number.' });
+  }
   const info = db.prepare(
-    'INSERT INTO payments (name, email, plan_id, amount, utr, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(name.trim(), email.trim().toLowerCase(), plan.id, plan.price, utr.trim(), Date.now());
+    'INSERT INTO payments (name, email, phone, plan_id, amount, utr, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(name.trim(), email.trim().toLowerCase(), digits, plan.id, plan.price, utr.trim(), Date.now());
   res.json({ ok: true, paymentId: Number(info.lastInsertRowid),
     message: 'Payment details received. You will get your private access link on email once verified.' });
 });
@@ -325,8 +361,8 @@ app.post('/api/admin/approve', requireAdmin, async (req, res) => {
 
   db.prepare('UPDATE payments SET status = ? WHERE id = ?').run('approved', payment.id);
   db.prepare(
-    'INSERT INTO subscriptions (payment_id, name, email, plan_id, token, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(payment.id, payment.name, payment.email, plan.id, token, expiresAt, Date.now());
+    'INSERT INTO subscriptions (payment_id, name, email, phone, plan_id, token, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(payment.id, payment.name, payment.email, payment.phone || '', plan.id, token, expiresAt, Date.now());
 
   let emailResult = { sent: false, reason: 'SMTP not configured — copy the link and send it manually.' };
   try {
@@ -334,7 +370,7 @@ app.post('/api/admin/approve', requireAdmin, async (req, res) => {
   } catch (e) {
     emailResult = { sent: false, reason: 'Email failed: ' + e.message };
   }
-  res.json({ ok: true, link, email: emailResult });
+  res.json({ ok: true, link, phone: payment.phone || '', email: emailResult });
 });
 
 app.post('/api/admin/reject', requireAdmin, (req, res) => {
@@ -345,7 +381,7 @@ app.post('/api/admin/reject', requireAdmin, (req, res) => {
 
 app.get('/api/admin/subscriptions', requireAdmin, (req, res) => {
   const rows = db.prepare(
-    'SELECT id, name, email, plan_id, used_at, expires_at, created_at FROM subscriptions ORDER BY created_at DESC'
+    'SELECT id, name, email, phone, plan_id, used_at, expires_at, created_at FROM subscriptions ORDER BY created_at DESC'
   ).all();
   res.json(rows.map((r) => ({
     ...r,
