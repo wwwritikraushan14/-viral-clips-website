@@ -58,10 +58,26 @@ async function init(){
   document.getElementById('expiry').innerHTML =
     `<span class="expiry-pill">👋 ${esc(me.name)} · <b>${me.daysLeft===null?'Lifetime access':me.daysLeft+' day'+(me.daysLeft===1?'':'s')+' left'}</b></span>`;
   const videos = await fetch('/api/videos').then(r=>r.json());
-  document.getElementById('videos').innerHTML = videos.length ? videos.map(v=>`
-    <div class="video-card" onclick="playVideo(${v.id},'${esc(v.title)}')">
-      <div class="video-thumb">▶️</div><h4>${esc(v.title)}</h4></div>`).join('')
+  const grid = document.getElementById('videos');
+  grid.innerHTML = videos.length ? videos.map(v=>`
+    <div class="video-card" data-id="${v.id}" data-title="${esc(v.title)}">
+      <div class="wc-thumb">
+        <video data-src="/api/stream/${v.id}" muted playsinline preload="none"></video>
+        <div class="wc-play"></div>
+      </div>
+      <h4>${esc(v.title)}</h4>
+    </div>`).join('')
     : '<p class="muted">No videos yet — new drops coming soon.</p>';
+  grid.querySelectorAll('.video-card').forEach(c=>
+    c.addEventListener('click',()=>playVideo(+c.dataset.id, c.dataset.title)));
+  // lazy-load real first-frame thumbnails only when a card scrolls into view
+  const io = new IntersectionObserver(es=>es.forEach(e=>{
+    if(!e.isIntersecting) return;
+    const vd = e.target; io.unobserve(vd);
+    vd.addEventListener('error', ()=>vd.remove(), {once:true});
+    vd.preload = 'metadata'; vd.src = vd.dataset.src;
+  }),{rootMargin:'300px'});
+  grid.querySelectorAll('.wc-thumb video').forEach(v=>io.observe(v));
 }
 function playVideo(id,title){
   const w = document.getElementById('playerWrap'); w.style.display='block';

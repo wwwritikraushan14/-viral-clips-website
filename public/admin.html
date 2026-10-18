@@ -189,11 +189,27 @@ async function revokeSub(id){
 // ---------- videos ----------
 async function loadVideos(){
   let rows=[]; try{ rows=await api('/api/admin/videos'); }catch(e){ toast('Could not load videos',false); return; }
-  document.getElementById('videosList').innerHTML=(rows.length?`<div class="table-scroll"><table>
-    <tr><th>Title</th><th>Size</th><th>Added</th><th></th></tr>`+
-    rows.map(v=>`<tr><td>${esc(v.title)}</td><td>${(v.size/1048576).toFixed(1)} MB</td>
-      <td>${new Date(v.created_at).toLocaleDateString('en-IN')}</td>
-      <td><button class="btn small ghost" onclick="armConfirm(this,()=>delVideo(${v.id}))">Delete</button></td></tr>`).join('')+'</table></div>'
+  const now = Date.now();
+  document.getElementById('videosList').innerHTML =
+    `<h3 style="margin:22px 0 4px">🎬 Your videos <span class="muted" style="font-weight:400;font-size:14px">(${rows.length} live)</span></h3>` +
+    (rows.length ? `<div class="adm-vgrid">` + rows.map(v=>{
+      const hue = (v.id*47)%360;                       // deterministic art per video
+      const sizeMB = (v.size/1048576).toFixed(1)+' MB';
+      const dateStr = new Date(v.created_at).toLocaleDateString('en-IN');
+      const isNew = (now - v.created_at) < 3*864e5;    // added in last 3 days
+      return `<div class="adm-vcard">
+        <div class="adm-vthumb" style="--h:${hue}">
+          <div class="adm-vthumb-play">▶</div>
+          <span class="adm-vbadge">${sizeMB}</span>
+          ${isNew?'<span class="adm-vnew">NEW</span>':''}
+        </div>
+        <div class="adm-vbody">
+          <div class="adm-vtitle">${esc(v.title)}</div>
+          <div class="adm-vmeta">${sizeMB} · ${dateStr}</div>
+          <button class="btn small ghost" onclick="armConfirm(this,()=>delVideo(${v.id}))">Delete</button>
+        </div>
+      </div>`;
+    }).join('') + `</div>`
     : '<p class="muted" style="margin-top:16px">No videos yet — upload your first one above.</p>');
 }
 async function uploadVideo(){
