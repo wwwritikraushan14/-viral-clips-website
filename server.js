@@ -279,10 +279,9 @@ app.get('/api/stream/:id', requireSubscriber, (req, res) => {
   }
 });
 
-// Public teaser (titles only — no streams).
+// Public teasers: homepage gallery photos uploaded via the admin panel.
 app.get('/api/teasers', (req, res) => {
-  const rows = db.prepare('SELECT id, title, created_at FROM videos ORDER BY created_at DESC').all();
-  res.json({ count: rows.length, videos: rows });
+  res.json(db.prepare('SELECT id, title FROM teasers ORDER BY created_at DESC').all());
 });
 
 // ---- admin ----
@@ -425,6 +424,55 @@ app.delete('/api/admin/videos/:id', requireAdmin, (req, res) => {
 
 app.get('/api/admin/videos', requireAdmin, (req, res) => {
   res.json(db.prepare('SELECT id, title, size, created_at FROM videos ORDER BY created_at DESC').all());
+});
+
+// ---------- homepage teaser images (admin uploads, shown on homepage gallery) ----------
+const teaserUpload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (req, file, cb) => cb(null, 'teaser-' + Date.now() + '-' + crypto.randomBytes(6).toString('hex') + path.extname(file.originalname)),
+  }),
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed'));
+  },
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
+});
+
+app.post('/api/admin/teasers', requireAdmin, (req, res) => {
+  teaserUpload.single('image')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
+    if (!req.file) return res.status(400).json({ error: 'no_file' });
+    const title = (req.body.title || path.parse(req.file.originalname).name).trim();
+    const info = db.prepare(
+      'INSERT INTO teasers (title, filename, mime, size, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(title, req.file.filename, req.file.mimetype, req.file.size, Date.now());
+    res.json({ ok: true, id: Number(info.lastInsertRowid), title });
+  });
+});
+
+app.delete('/api/admin/teasers/:id', requireAdmin, (req, res) => {
+  const t = db.prepare('SELECT * FROM teasers WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'not_found' });
+  db.prepare('DELETE FROM teasers WHERE id = ?').run(t.id);
+  const fp = path.join(UPLOAD_DIR, path.basename(t.filename));
+  if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/teasers', requireAdmin, (req, res) => {
+  res.json(db.prepare('SELECT id, title, size, created_at FROM teasers ORDER BY created_at DESC').all());
+});
+
+// Public: teaser image file.
+app.get('/api/teaser-img/:id', (req, res) => {
+  const t = db.prepare('SELECT filename, mime FROM teasers WHERE id = ?').get(req.params.id);
+  if (!t) return res.status(404).end();
+  const fp = path.join(UPLOAD_DIR, path.basename(t.filename));
+  if (!fs.existsSync(fp)) return res.status(404).end();
+  res.setHeader('Content-Type', t.mime || 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  fs.createReadStream(fp).pipe(res);
 });
 
 app.listen(PORT, () => {

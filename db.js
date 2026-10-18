@@ -2,7 +2,8 @@
 const { DatabaseSync } = require('node:sqlite');
 const path = require('path');
 
-const db = new DatabaseSync(path.join(__dirname, 'viral-clips.db'));
+const dbPath = process.env.DB_PATH || path.join(__dirname, 'viral-clips.db');
+const db = new DatabaseSync(dbPath);
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS payments (
@@ -40,6 +41,15 @@ CREATE TABLE IF NOT EXISTS videos (
 
 CREATE TABLE IF NOT EXISTS admin_sessions (
   id TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS teasers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
 `);
