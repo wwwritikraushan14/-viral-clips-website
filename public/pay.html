@@ -44,6 +44,7 @@
       <p class="muted" style="font-size:14px;margin-bottom:8px">After paying, enter your details + the <b>UTR / UPI transaction ID</b> from your payment app. We'll verify and email your private access link.</p>
       <label>Your name</label><input id="name" placeholder="Full name">
       <label>Email (access link will be sent here)</label><input id="email" type="email" placeholder="you@example.com">
+      <label>WhatsApp number (10 digits)</label><input id="phone" type="tel" inputmode="numeric" placeholder="e.g. 9876543210">
       <label>UTR / UPI Transaction ID (12 digits)</label><input id="utr" placeholder="e.g. 123456789012">
       <button class="btn" style="width:100%;margin-top:14px" onclick="submitProof()">I've Paid — Submit Proof</button>
       <div id="msg"></div>
@@ -52,7 +53,7 @@
 
   <div id="stepDone" style="display:none" class="center"><div class="card" style="text-align:center;max-width:480px">
     <h1>✅ Received!</h1>
-    <p class="muted" style="margin:14px 0">Your payment proof is with us. Once verified, your private <b>one-device access link</b> will arrive on your email. Keep an eye on your inbox (and spam folder).</p>
+    <p class="muted" style="margin:14px 0">Your payment proof is with us. Once verified, your private <b>one-device access link</b> will arrive on your email or WhatsApp. Keep an eye on your inbox (and spam folder).</p>
     <a class="btn" href="/">Back to home</a>
   </div></div>
 </div>
@@ -72,6 +73,7 @@ fetch('/api/plans').then(r=>r.json()).then(plans=>{
 function copyUpi(){ navigator.clipboard.writeText(window._upiId).then(()=>alert('UPI ID copied')); }
 async function submitProof(){
   const body = { name:document.getElementById('name').value, email:document.getElementById('email').value,
+                 phone:document.getElementById('phone').value,
                  planId:plan.id, utr:document.getElementById('utr').value };
   const r = await fetch('/api/payments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d = await r.json();

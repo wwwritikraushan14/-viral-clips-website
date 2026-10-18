@@ -42,6 +42,7 @@
       <button class="tab" onclick="showTab('payments',this)">💰 Payments <span id="pendingCount"></span></button>
       <button class="tab" onclick="showTab('subs',this)">👥 Subscribers</button>
       <button class="tab" onclick="showTab('videos',this)">🎬 Videos</button>
+      <button class="tab" onclick="showTab('teasers',this)">🖼️ Homepage Teasers</button>
     </div>
 
     <div id="tab-dash">
@@ -69,6 +70,17 @@
         <div id="uploadMsg"></div>
       </div>
       <div id="videosList"></div>
+    </div>
+
+    <div id="tab-teasers" style="display:none">
+      <div class="card"><h3>Add a homepage teaser photo</h3>
+        <p class="muted" style="font-size:13px;margin:6px 0">Photos you add here appear in the "Fresh exclusives" gallery on the homepage automatically. No code needed.</p>
+        <label>Caption</label><input id="tTitle" placeholder="e.g. Exclusive Drop 12">
+        <label>Photo</label><input id="tFile" type="file" accept="image/*">
+        <button class="btn" style="margin-top:10px" onclick="uploadTeaser()">Add photo</button>
+        <div id="teaserMsg"></div>
+      </div>
+      <div id="teasersList"></div>
     </div>
   </div>
 </div>
@@ -105,11 +117,12 @@ async function login(){
 async function logout(){ await fetch('/api/admin/logout',{method:'POST'}); location.reload(); }
 function showTab(name,el){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on')); el.classList.add('on');
-  ['dash','payments','subs','videos'].forEach(t=>document.getElementById('tab-'+t).style.display=t===name?'block':'none');
+  ['dash','payments','subs','videos','teasers'].forEach(t=>document.getElementById('tab-'+t).style.display=t===name?'block':'none');
   if(name==='dash') loadDash();
   if(name==='payments') loadPayments();
   if(name==='subs') loadSubs();
   if(name==='videos') loadVideos();
+  if(name==='teasers') loadTeasers();
 }
 // ---------- dashboard ----------
 async function loadDash(){
@@ -127,8 +140,8 @@ async function loadPayments(){
   let rows=[]; try{ rows=await api('/api/admin/payments?status=pending'); }catch(e){ toast('Could not load payments', false); return; }
   document.getElementById('pendingCount').textContent=rows.length?`(${rows.length})`:'';
   document.getElementById('paymentsList').innerHTML = rows.length ? `<div class="table-scroll"><table>
-    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Amount</th><th>UTR</th><th>When</th><th></th></tr>`+
-    rows.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.email)}</td><td>${esc(p.plan_id)}</td>
+    <tr><th>Name</th><th>Email</th><th>Phone</th><th>Plan</th><th>Amount</th><th>UTR</th><th>When</th><th></th></tr>`+
+    rows.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.email)}</td><td><a href="https://wa.me/91${esc(p.phone||'').replace(/\D/g,'')}" target="_blank" style="color:#25D366">${esc(p.phone||'-')}</a></td><td>${esc(p.plan_id)}</td>
       <td>₹${p.amount}</td><td><code>${esc(p.utr)}</code></td>
       <td>${new Date(p.created_at).toLocaleString('en-IN')}</td>
       <td class="row-actions"><button class="btn small" onclick="approve(${p.id})">Approve</button>
@@ -139,11 +152,14 @@ async function approve(id){
   try{
     const d=await api('/api/admin/approve',{method:'POST',body:JSON.stringify({paymentId:id})});
     const emailNote=d.email.sent?'✅ Email sent to customer.':'⚠️ '+d.email.reason;
+    const waNum=String(d.phone||'').replace(/\D/g,'');
+    const waMsg=encodeURIComponent(`Hi! Thanks for subscribing to VIRAL CLIPS. 🎬\n\nYour private access link (works on ONE device only — open it on the device you want to watch on):\n\n${d.link}\n\nDo not share this link. Enjoy!`);
+    const waBtn=waNum?`<a class="btn small" style="background:#25D366;margin-left:8px" target="_blank" href="https://wa.me/91${waNum}?text=${waMsg}">Send on WhatsApp</a>`:'';
     document.getElementById('paymentsList').innerHTML=
       `<div class="alert ok approved-box">Approved. ${esc(emailNote)}</div>
        <p class="muted">Access link (one-time, one-device):</p>
        <div class="link-box">${esc(d.link)}</div>
-       <button class="btn small" onclick="copyText('${d.link}',this)">Copy link</button>
+       <button class="btn small" onclick="copyText('${d.link}',this)">Copy link</button>${waBtn}
        <p class="muted" style="margin-top:12px"><a href="#" onclick="loadPayments();return false">← Back to pending list</a></p>`;
     toast('Payment approved ✅'); loadDash();
   }catch(e){ toast(e.message,false); }
@@ -159,8 +175,8 @@ function copyText(t,btn){
 async function loadSubs(){
   let rows=[]; try{ rows=await api('/api/admin/subscriptions'); }catch(e){ toast('Could not load subscribers',false); return; }
   document.getElementById('subsList').innerHTML = rows.length ? `<div class="table-scroll"><table>
-    <tr><th>Name</th><th>Email</th><th>Plan</th><th>Status</th><th>Opened</th><th>Expires</th><th></th></tr>`+
-    rows.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.email)}</td><td>${esc(s.plan_id)}</td>
+    <tr><th>Name</th><th>Email</th><th>Phone</th><th>Plan</th><th>Status</th><th>Opened</th><th>Expires</th><th></th></tr>`+
+    rows.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.email)}</td><td>${esc(s.phone||'-')}</td><td>${esc(s.plan_id)}</td>
       <td><span class="badge ${s.active?'active':'expired'}">${s.active?'active':'expired'}</span></td>
       <td>${s.opened?'yes':'not yet'}</td>
       <td>${s.expires_at?new Date(s.expires_at).toLocaleDateString('en-IN'):'lifetime'}</td>
@@ -189,27 +205,11 @@ async function revokeSub(id){
 // ---------- videos ----------
 async function loadVideos(){
   let rows=[]; try{ rows=await api('/api/admin/videos'); }catch(e){ toast('Could not load videos',false); return; }
-  const now = Date.now();
-  document.getElementById('videosList').innerHTML =
-    `<h3 style="margin:22px 0 4px">🎬 Your videos <span class="muted" style="font-weight:400;font-size:14px">(${rows.length} live)</span></h3>` +
-    (rows.length ? `<div class="adm-vgrid">` + rows.map(v=>{
-      const hue = (v.id*47)%360;                       // deterministic art per video
-      const sizeMB = (v.size/1048576).toFixed(1)+' MB';
-      const dateStr = new Date(v.created_at).toLocaleDateString('en-IN');
-      const isNew = (now - v.created_at) < 3*864e5;    // added in last 3 days
-      return `<div class="adm-vcard">
-        <div class="adm-vthumb" style="--h:${hue}">
-          <div class="adm-vthumb-play">▶</div>
-          <span class="adm-vbadge">${sizeMB}</span>
-          ${isNew?'<span class="adm-vnew">NEW</span>':''}
-        </div>
-        <div class="adm-vbody">
-          <div class="adm-vtitle">${esc(v.title)}</div>
-          <div class="adm-vmeta">${sizeMB} · ${dateStr}</div>
-          <button class="btn small ghost" onclick="armConfirm(this,()=>delVideo(${v.id}))">Delete</button>
-        </div>
-      </div>`;
-    }).join('') + `</div>`
+  document.getElementById('videosList').innerHTML=(rows.length?`<div class="table-scroll"><table>
+    <tr><th>Title</th><th>Size</th><th>Added</th><th></th></tr>`+
+    rows.map(v=>`<tr><td>${esc(v.title)}</td><td>${(v.size/1048576).toFixed(1)} MB</td>
+      <td>${new Date(v.created_at).toLocaleDateString('en-IN')}</td>
+      <td><button class="btn small ghost" onclick="armConfirm(this,()=>delVideo(${v.id}))">Delete</button></td></tr>`).join('')+'</table></div>'
     : '<p class="muted" style="margin-top:16px">No videos yet — upload your first one above.</p>');
 }
 async function uploadVideo(){
@@ -228,6 +228,35 @@ async function uploadVideo(){
 }
 async function delVideo(id){
   try{ await api('/api/admin/videos/'+id,{method:'DELETE'}); toast('Video deleted'); loadVideos(); loadDash(); }
+  catch(e){ toast(e.message,false); }
+}
+// ---------- homepage teasers ----------
+async function loadTeasers(){
+  let rows=[]; try{ rows=await api('/api/admin/teasers'); }catch(e){ toast('Could not load teasers',false); return; }
+  document.getElementById('teasersList').innerHTML=(rows.length?`<div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));margin-top:16px">`+
+    rows.map(t=>`<div class="card" style="padding:10px;text-align:center">
+      <img src="/api/teaser-img/${t.id}" alt="${esc(t.title)}" loading="lazy" style="width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:10px">
+      <div style="font-size:13px;font-weight:600;margin:8px 0 6px">${esc(t.title)}</div>
+      <button class="btn small ghost" onclick="armConfirm(this,()=>delTeaser(${t.id}))">Delete</button>
+    </div>`).join('')+'</div>'
+    : '<p class="muted" style="margin-top:16px">No teaser photos yet — the homepage shows the built-in gallery until you add some.</p>');
+}
+async function uploadTeaser(){
+  const f=document.getElementById('tFile').files[0];
+  if(!f){ toast('Choose a photo first',false); return; }
+  const fd=new FormData(); fd.append('image',f); fd.append('title',document.getElementById('tTitle').value||f.name.replace(/\.[^.]+$/,''));
+  document.getElementById('teaserMsg').innerHTML='<p class="muted">Uploading…</p>';
+  try{
+    const r=await fetch('/api/admin/teasers',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.message||'Upload failed');
+    document.getElementById('teaserMsg').innerHTML='<div class="alert ok">Photo added to homepage ✅</div>';
+    document.getElementById('tTitle').value=''; document.getElementById('tFile').value='';
+    toast('Teaser added ✅'); loadTeasers();
+  }catch(e){ document.getElementById('teaserMsg').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
+}
+async function delTeaser(id){
+  try{ await api('/api/admin/teasers/'+id,{method:'DELETE'}); toast('Teaser deleted'); loadTeasers(); }
   catch(e){ toast(e.message,false); }
 }
 // auto-show panel if already logged in
