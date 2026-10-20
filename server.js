@@ -183,9 +183,30 @@ function requireSubscriber(req, res, next) {
 function requireAdmin(req, res, next) {
   const sid = req.cookies.vc_admin;
   if (!sid) return res.status(401).json({ error: 'admin_login_required' });
-  const row = db.prepare('SELECT * FROM admin_sessions WHERE id = ?').get(sid);
+  if (validAdminToken(sid)) return next(); // signed cookie — no DB lookup needed
+  const row = db.prepare('SELECT * FROM admin_sessions WHERE id = ?').get(sid); // legacy DB sessions
   if (!row) return res.status(401).json({ error: 'admin_login_required' });
   next();
+}
+
+// Admin login sessions are signed cookies, NOT database rows — so logging in
+// never needs a disk write. (A completely full disk otherwise makes even a
+// correct password "fail", because the session row can't be saved.)
+// The ADMIN_PASSWORD is the signing key: changing it logs everyone out.
+const ADMIN_SESSION_MS = 12 * 3600 * 1000;
+function adminToken() {
+  const exp = String(Date.now() + ADMIN_SESSION_MS);
+  const sig = crypto.createHmac('sha256', ADMIN_PASSWORD).update('vc-admin:' + exp).digest('hex');
+  return exp + '.' + sig;
+}
+function validAdminToken(tok) {
+  const parts = String(tok || '').split('.');
+  if (parts.length !== 2) return false;
+  const [exp, sig] = parts;
+  if (!/^\d+$/.test(exp) || Date.now() > Number(exp)) return false;
+  const want = crypto.createHmac('sha256', ADMIN_PASSWORD).update('vc-admin:' + exp).digest('hex');
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function page(title, heading, message, cta) {
@@ -367,14 +388,12 @@ app.post('/api/admin/login', rateLimit({ windowMs: 60000, max: 8 }), (req, res) 
   const b = Buffer.from(ADMIN_PASSWORD);
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
   if (!ok) return res.status(401).json({ error: 'wrong_password' });
-  const sid = crypto.randomBytes(24).toString('hex');
-  db.prepare('INSERT INTO admin_sessions (id, created_at) VALUES (?, ?)').run(sid, Date.now());
-  res.cookie('vc_admin', sid, { httpOnly: true, sameSite: 'lax', secure: IS_HTTPS, maxAge: 12 * 3600 * 1000 });
+  res.cookie('vc_admin', adminToken(), { httpOnly: true, sameSite: 'lax', secure: IS_HTTPS, maxAge: ADMIN_SESSION_MS });
   res.json({ ok: true });
 });
 
 app.post('/api/admin/logout', requireAdmin, (req, res) => {
-  db.prepare('DELETE FROM admin_sessions WHERE id = ?').run(req.cookies.vc_admin);
+  try { db.prepare('DELETE FROM admin_sessions WHERE id = ?').run(req.cookies.vc_admin); } catch (e) { /* legacy cleanup is best-effort */ }
   res.clearCookie('vc_admin');
   res.json({ ok: true });
 });
@@ -523,16 +542,18 @@ app.post('/api/admin/videos', requireAdmin, (req, res) => {
 app.delete('/api/admin/videos/:id', requireAdmin, async (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'not_found' });
-  db.prepare('DELETE FROM videos WHERE id = ?').run(video.id);
+  // Free the actual file FIRST: on a full disk, removing the file is what
+  // makes room so the database row delete below can succeed again.
   if (video.storage === 'r2') {
     if (R2_ON) {
       try { await s3.send(new s3Commands.DeleteObjectCommand({ Bucket: R2_BUCKET, Key: video.filename })); }
-      catch (e) { /* row already removed; a leftover object can be deleted in the R2 dashboard */ }
+      catch (e) { /* row is removed below; a leftover object can be deleted in the R2 dashboard */ }
     }
   } else {
     const fp = path.join(UPLOAD_DIR, path.basename(video.filename));
     if (fs.existsSync(fp)) fs.unlinkSync(fp);
   }
+  db.prepare('DELETE FROM videos WHERE id = ?').run(video.id);
   res.json({ ok: true });
 });
 
