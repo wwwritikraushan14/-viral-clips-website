@@ -23,6 +23,30 @@ const IS_HTTPS = BASE_URL.startsWith('https://'); // secure cookies only over HT
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+// ---------------- video storage: Cloudflare R2 (optional) ----------------
+// When R2_* variables are set, NEW video uploads go to the R2 bucket and
+// members stream straight from Cloudflare — the Railway disk then only
+// holds the database and small teaser images. Without them, videos stay
+// on local disk exactly as before. Old 'local' videos always keep working.
+const R2_ENDPOINT = process.env.R2_ENDPOINT || '';
+const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || '';
+const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || '';
+const R2_BUCKET = process.env.R2_BUCKET || '';
+const R2_ON = Boolean(R2_ENDPOINT && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_BUCKET);
+let s3 = null;
+let s3Commands = null;
+let getSignedUrl = null;
+if (R2_ON) {
+  const s3lib = require('@aws-sdk/client-s3');
+  s3 = new s3lib.S3Client({
+    region: 'auto',
+    endpoint: R2_ENDPOINT,
+    credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY },
+  });
+  s3Commands = s3lib;
+  getSignedUrl = require('@aws-sdk/s3-request-presigner').getSignedUrl;
+}
+
 const PLANS = [
   { id: '1m',   name: '1 Month',  months: 1,  price: 299  },
   { id: '3m',   name: '3 Months', months: 3,  price: 799  },
@@ -187,10 +211,10 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  // CSP: allow self + inline (pages use inline scripts/styles); videos from self; QR is data: URL
+  // CSP: allow self + inline (pages use inline scripts/styles); videos from self (+ R2 when configured); QR is data: URL
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-    "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'");
+    "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; media-src 'self'" + (R2_ON ? ' https://*.r2.cloudflarestorage.com' : '') + "; connect-src 'self'; frame-ancestors 'none'");
   next();
 });
 
@@ -290,9 +314,24 @@ app.get('/api/videos', requireSubscriber, (req, res) => {
 });
 
 // Token-gated video streaming with range support.
-app.get('/api/stream/:id', requireSubscriber, (req, res) => {
+app.get('/api/stream/:id', requireSubscriber, async (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'not_found' });
+  // Cloudflare R2 video: hand the member a private signed link (valid 6h)
+  // and let Cloudflare serve the video directly — no Railway bandwidth used.
+  if (video.storage === 'r2') {
+    if (!R2_ON) return res.status(503).json({ error: 'storage_unavailable' });
+    try {
+      const url = await getSignedUrl(
+        s3,
+        new s3Commands.GetObjectCommand({ Bucket: R2_BUCKET, Key: video.filename }),
+        { expiresIn: 6 * 3600 }
+      );
+      return res.redirect(302, url);
+    } catch (e) {
+      return res.status(502).json({ error: 'storage_error', message: 'Could not reach video storage. Try again.' });
+    }
+  }
   const filePath = path.join(UPLOAD_DIR, path.basename(video.filename));
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'file_missing' });
   const stat = fs.statSync(filePath);
@@ -440,24 +479,60 @@ const upload = multer({
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB
 });
 
+// R2 mode: hold the file in memory briefly, then send it to Cloudflare —
+// nothing is written to the (full) Railway disk.
+const uploadR2 = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('video/')) cb(null, true);
+    else cb(new Error('Only video files are allowed'));
+  },
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB
+});
+
 app.post('/api/admin/videos', requireAdmin, (req, res) => {
-  upload.single('video')(req, res, (err) => {
+  const handler = R2_ON ? uploadR2.single('video') : upload.single('video');
+  handler(req, res, async (err) => {
     if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
     if (!req.file) return res.status(400).json({ error: 'no_file' });
     const title = (req.body.title || path.parse(req.file.originalname).name).trim();
+    if (R2_ON) {
+      const key = 'videos/' + Date.now() + '-' + crypto.randomBytes(6).toString('hex') + path.extname(req.file.originalname);
+      try {
+        await s3.send(new s3Commands.PutObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: key,
+          Body: req.file.buffer,
+          ContentType: req.file.mimetype,
+        }));
+      } catch (e) {
+        return res.status(502).json({ error: 'storage_error', message: 'Upload to Cloudflare failed: ' + e.message });
+      }
+      const info = db.prepare(
+        'INSERT INTO videos (title, filename, mime, size, storage, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(title, key, req.file.mimetype, req.file.size, 'r2', Date.now());
+      return res.json({ ok: true, id: Number(info.lastInsertRowid), title });
+    }
     const info = db.prepare(
-      'INSERT INTO videos (title, filename, mime, size, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(title, req.file.filename, req.file.mimetype, req.file.size, Date.now());
+      'INSERT INTO videos (title, filename, mime, size, storage, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(title, req.file.filename, req.file.mimetype, req.file.size, 'local', Date.now());
     res.json({ ok: true, id: Number(info.lastInsertRowid), title });
   });
 });
 
-app.delete('/api/admin/videos/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/videos/:id', requireAdmin, async (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'not_found' });
   db.prepare('DELETE FROM videos WHERE id = ?').run(video.id);
-  const fp = path.join(UPLOAD_DIR, path.basename(video.filename));
-  if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  if (video.storage === 'r2') {
+    if (R2_ON) {
+      try { await s3.send(new s3Commands.DeleteObjectCommand({ Bucket: R2_BUCKET, Key: video.filename })); }
+      catch (e) { /* row already removed; a leftover object can be deleted in the R2 dashboard */ }
+    }
+  } else {
+    const fp = path.join(UPLOAD_DIR, path.basename(video.filename));
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  }
   res.json({ ok: true });
 });
 
@@ -516,6 +591,7 @@ app.get('/api/teaser-img/:id', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`VIRAL CLIPS running on ${BASE_URL}`);
+  console.log(`Video storage: ${R2_ON ? 'Cloudflare R2 (bucket: ' + R2_BUCKET + ')' : 'local disk'}`);
   console.log(`Plans: ${PLANS.map((p) => `${p.name} ₹${p.price}`).join(' | ')}`);
   if (ADMIN_PASSWORD === 'change-me-now') console.log('⚠ Set ADMIN_PASSWORD env var before going live.');
   if (!process.env.RESEND_API_KEY && !process.env.BREVO_API_KEY) console.log('⚠ Email not configured — magic links will be shown in the admin panel to send manually.');

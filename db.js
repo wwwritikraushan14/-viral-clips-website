@@ -62,4 +62,8 @@ for (const t of ['payments', 'subscriptions']) {
   catch (e) { /* column already exists */ }
 }
 
+// migration (2026-10-21): where each video file lives — 'local' disk or 'r2' (Cloudflare)
+try { db.exec(`ALTER TABLE videos ADD COLUMN storage TEXT NOT NULL DEFAULT 'local'`); }
+catch (e) { /* column already exists */ }
+
 module.exports = db;
