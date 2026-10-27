@@ -351,7 +351,7 @@ app.post('/api/payments', rateLimit({ windowMs: 60000, max: 10 }), (req, res) =>
     'INSERT INTO payments (name, email, phone, plan_id, amount, utr, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   ).run(name.trim(), emailClean, digits, plan.id, plan.price, utr.trim(), Date.now());
   res.json({ ok: true, paymentId: Number(info.lastInsertRowid),
-    message: 'Payment details received. You will get your private access link on email once verified.' });
+    message: 'Payment details received. You will get your private access link on WhatsApp once verified.' });
 });
 
 // One-time magic link entry. First open binds the link to this device.
