@@ -239,6 +239,17 @@ app.use((req, res, next) => {
   next();
 });
 
+// ---- request logging (Phase 1) ----
+// Logs method + path + status + time only. req.path never includes the
+// query string (which can carry tokens), and we never log cookies/bodies.
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    console.log(`[req] ${req.method} ${req.path} ${res.statusCode} ${Date.now() - start}ms`);
+  });
+  next();
+});
+
 // ---- simple in-memory rate limiter ----
 const buckets = new Map();
 function rateLimit({ windowMs, max }) {
@@ -265,7 +276,10 @@ app.use(express.static(path.join(__dirname, 'public'), {
 // ---- public API ----
 app.get('/api/plans', (req, res) => res.json(PLANS));
 
-app.get('/api/qr/:planId', async (req, res) => {
+// ---- health check (Phase 1): for uptime monitoring, no sensitive data ----
+app.get('/health', (req, res) => res.json({ ok: true, storage: R2_ON ? 'r2' : 'local', uptime: Math.floor(process.uptime()) }));
+
+app.get('/api/qr/:planId', rateLimit({ windowMs: 60000, max: 30 }), async (req, res) => {
   const plan = planById(req.params.planId);
   if (!plan) return res.status(404).json({ error: 'unknown_plan' });
   const upiUrl = `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=${encodeURIComponent(PAYEE_NAME)}&am=${plan.price}&cu=INR&tn=${encodeURIComponent('VIRALCLIPS-' + plan.id)}`;
@@ -377,7 +391,7 @@ app.get('/api/stream/:id', requireSubscriber, async (req, res) => {
 });
 
 // Public teasers: homepage gallery photos uploaded via the admin panel.
-app.get('/api/teasers', (req, res) => {
+app.get('/api/teasers', rateLimit({ windowMs: 60000, max: 120 }), (req, res) => {
   res.json(db.prepare('SELECT id, title FROM teasers ORDER BY created_at DESC').all());
 });
 
@@ -509,7 +523,7 @@ const uploadR2 = multer({
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB
 });
 
-app.post('/api/admin/videos', requireAdmin, (req, res) => {
+app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, (req, res) => {
   const handler = R2_ON ? uploadR2.single('video') : upload.single('video');
   handler(req, res, async (err) => {
     if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
@@ -574,7 +588,7 @@ const teaserUpload = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
 });
 
-app.post('/api/admin/teasers', requireAdmin, (req, res) => {
+app.post('/api/admin/teasers', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, (req, res) => {
   teaserUpload.single('image')(req, res, (err) => {
     if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
     if (!req.file) return res.status(400).json({ error: 'no_file' });
@@ -600,7 +614,7 @@ app.get('/api/admin/teasers', requireAdmin, (req, res) => {
 });
 
 // Public: teaser image file.
-app.get('/api/teaser-img/:id', (req, res) => {
+app.get('/api/teaser-img/:id', rateLimit({ windowMs: 60000, max: 120 }), (req, res) => {
   const t = db.prepare('SELECT filename, mime FROM teasers WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).end();
   const fp = path.join(UPLOAD_DIR, path.basename(t.filename));
@@ -608,6 +622,20 @@ app.get('/api/teaser-img/:id', (req, res) => {
   res.setHeader('Content-Type', t.mime || 'image/jpeg');
   res.setHeader('Cache-Control', 'public, max-age=86400');
   fs.createReadStream(fp).pipe(res);
+});
+
+// ---- 404 (Phase 1): branded page for browsers, JSON for API calls ----
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'not_found' });
+  res.status(404).sendFile(path.join(__dirname, 'public', '404.html'));
+});
+
+// ---- error handler (Phase 1): log it, never leak internals to visitors ----
+app.use((err, req, res, next) => {
+  console.error('[error]', req.method, req.path, err && err.message);
+  if (res.headersSent) return next(err);
+  if (req.path.startsWith('/api/')) return res.status(500).json({ error: 'server_error' });
+  res.status(500).send('<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Something went wrong \u2014 VIRAL CLIPS</title></head><body style="background:#07080c;color:#f2f3f5;font-family:system-ui,sans-serif;text-align:center;padding:80px 20px"><h1>Something went wrong</h1><p style="color:#9aa0ab">Please try again in a bit.</p><a href="/" style="color:#ff2d55;font-weight:700">Back to homepage</a></body></html>');
 });
 
 app.listen(PORT, () => {
