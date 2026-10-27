@@ -201,6 +201,7 @@ async function loadSubs(){
       <td>${s.expires_at?new Date(s.expires_at).toLocaleDateString('en-IN'):'lifetime'}</td>
       <td class="row-actions">
         <button class="btn small ghost" onclick="copySubLink(${s.id})">Copy link</button>
+        <button class="btn small ghost" onclick="armConfirm(this,()=>resetDevice(${s.id}))">Reset device</button>
         <button class="btn small ghost" onclick="extendSub(${s.id},1)">+1 mo</button>
         <button class="btn small ghost" onclick="armConfirm(this,()=>revokeSub(${s.id}))">Revoke</button>
       </td></tr>`).join('')+'</table></div>'
@@ -219,6 +220,10 @@ async function extendSub(id,months){
 }
 async function revokeSub(id){
   try{ await api('/api/admin/subscriptions/'+id,{method:'DELETE'}); toast('Access revoked'); loadSubs(); loadDash(); }
+  catch(e){ toast(e.message,false); }
+}
+async function resetDevice(id){
+  try{ await api('/api/admin/subscriptions/'+id+'/reset-device',{method:'POST'}); toast('Device lock cleared — link can be opened fresh ✅'); loadSubs(); }
   catch(e){ toast(e.message,false); }
 }
 // ---------- videos ----------
