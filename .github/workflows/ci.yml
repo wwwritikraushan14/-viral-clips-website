@@ -1,0 +1,23 @@
+# VIRAL CLIPS CI — runs the test suite on every push and pull request.
+# This reports pass/fail on GitHub. It does NOT block Railway deploys:
+# Railway deploys on push regardless, so a failing check is a warning to
+# fix, not a gate. (Phase 2)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
