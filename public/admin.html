@@ -43,6 +43,7 @@
       <button class="tab" onclick="showTab('subs',this)">👥 Subscribers</button>
       <button class="tab" onclick="showTab('videos',this)">🎬 Videos</button>
       <button class="tab" onclick="showTab('teasers',this)">🖼️ Homepage Teasers</button>
+      <button class="tab" onclick="showTab('errors',this)">⚠️ Errors</button>
     </div>
 
     <div id="tab-dash">
@@ -81,6 +82,10 @@
       </div>
       <div id="teasersList"></div>
     </div>
+    <div id="tab-errors" style="display:none">
+      <p class="muted" style="font-size:14px">Recent server errors, newest first (max 100 kept). If this list grows fast, something is breaking repeatedly.</p>
+      <div id="errorsList"></div>
+    </div>
   </div>
 </div>
 <div id="toast"></div>
@@ -92,8 +97,9 @@ function toast(msg, ok=true){
   t.textContent=msg; t.className='show '+(ok?'ok':'err');
   clearTimeout(toastT); toastT=setTimeout(()=>t.className='',2600);
 }
+function csrf(){ const m=document.cookie.match(/(?:^|; )vc_csrf=([^;]*)/); return m?decodeURIComponent(m[1]):''; }
 async function api(path, opts={}){
-  const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});
+  const r=await fetch(path,{headers:{'Content-Type':'application/json','x-csrf-token':csrf()},...opts});
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.message||d.error||('Request failed ('+r.status+')'));
   return d;
@@ -113,15 +119,16 @@ async function login(){
     showTab('dash', document.querySelector('.tab'));
   }catch(e){ document.getElementById('loginMsg').innerHTML='<div class="alert err">Wrong password</div>'; }
 }
-async function logout(){ await fetch('/api/admin/logout',{method:'POST'}); location.reload(); }
+async function logout(){ await fetch('/api/admin/logout',{method:'POST',headers:{'x-csrf-token':csrf()}}); location.reload(); }
 function showTab(name,el){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on')); el.classList.add('on');
-  ['dash','payments','subs','videos','teasers'].forEach(t=>document.getElementById('tab-'+t).style.display=t===name?'block':'none');
+  ['dash','payments','subs','videos','teasers','errors'].forEach(t=>document.getElementById('tab-'+t).style.display=t===name?'block':'none');
   if(name==='dash') loadDash();
   if(name==='payments') loadPayments();
   if(name==='subs') loadSubs();
   if(name==='videos') loadVideos();
   if(name==='teasers') loadTeasers();
+  if(name==='errors') loadErrors();
 }
 // ---------- dashboard ----------
 async function loadDash(){
@@ -233,7 +240,7 @@ async function uploadVideo(){
   const fd=new FormData(); fd.append('video',f); fd.append('title',document.getElementById('vTitle').value||f.name);
   document.getElementById('uploadMsg').innerHTML='<p class="muted">Uploading…</p>';
   try{
-    const r=await fetch('/api/admin/videos',{method:'POST',body:fd});
+    const r=await fetch('/api/admin/videos',{method:'POST',headers:{'x-csrf-token':csrf()},body:fd});
     const d=await r.json();
     if(!r.ok) throw new Error(d.message||'Upload failed');
     document.getElementById('uploadMsg').innerHTML='<div class="alert ok">Uploaded ✅</div>';
@@ -262,7 +269,7 @@ async function uploadTeaser(){
   const fd=new FormData(); fd.append('image',f); fd.append('title',document.getElementById('tTitle').value||f.name.replace(/\.[^.]+$/,''));
   document.getElementById('teaserMsg').innerHTML='<p class="muted">Uploading…</p>';
   try{
-    const r=await fetch('/api/admin/teasers',{method:'POST',body:fd});
+    const r=await fetch('/api/admin/teasers',{method:'POST',headers:{'x-csrf-token':csrf()},body:fd});
     const d=await r.json();
     if(!r.ok) throw new Error(d.message||'Upload failed');
     document.getElementById('teaserMsg').innerHTML='<div class="alert ok">Photo added to homepage ✅</div>';
@@ -273,6 +280,14 @@ async function uploadTeaser(){
 async function delTeaser(id){
   try{ await api('/api/admin/teasers/'+id,{method:'DELETE'}); toast('Teaser deleted'); loadTeasers(); }
   catch(e){ toast(e.message,false); }
+}
+// ---------- errors (Phase 2) ----------
+async function loadErrors(){
+  let rows=[]; try{ rows=await api('/api/admin/errors'); }catch(e){ toast('Could not load errors',false); return; }
+  document.getElementById('errorsList').innerHTML = rows.length ? `<div class="table-scroll"><table>
+    <tr><th>When</th><th>Method</th><th>Path</th><th>Message</th></tr>`+
+    rows.map(r=>`<tr><td>${new Date(r.created_at).toLocaleString('en-IN')}</td><td>${esc(r.method)}</td><td><code>${esc(r.path)}</code></td><td>${esc(r.message)}</td></tr>`).join('')+'</table></div>'
+    : '<p class="muted" style="margin-top:16px">No errors recorded. 🎉</p>';
 }
 // auto-show panel if already logged in
 fetch('/api/admin/stats').then(r=>{ if(r.ok){
