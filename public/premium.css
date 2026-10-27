@@ -49,7 +49,7 @@ h1,h2,h3,.logo,.price,.stat-card .num,.plan-card .price{font-family:'Sora','Inte
 .gallery{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
 .g-card{border-radius:var(--px-radius);overflow:hidden;border:1px solid var(--px-border);background:var(--px-surface);box-shadow:0 8px 24px rgba(0,0,0,.35)}
 .g-meta{padding:12px 14px}
-.g-meta h4{margin:0 0 4px;font-size:15px}
+.g-meta h3{margin:0 0 4px;font-size:15px}
 .g-tag{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--px-gold)}
 .g-lock{position:absolute;top:10px;right:10px;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.15);border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:15px}
 /* steps */
@@ -103,7 +103,7 @@ code{background:#0c0e13;padding:4px 8px;border-radius:6px;font-size:13px}
 .pro-footer-inner{display:grid;gap:28px;grid-template-columns:1.5fr 1fr 1fr;max-width:1080px;margin:0 auto;padding:0 20px}
 @media(max-width:640px){.pro-footer-inner{grid-template-columns:1fr 1fr}}
 .pro-footer p{color:var(--px-muted);font-size:14px;line-height:1.6;margin:10px 0 0}
-.pro-footer h4{font-size:12px;text-transform:uppercase;letter-spacing:1.2px;color:var(--px-muted);margin:0 0 12px}
+.pro-footer h3{font-size:12px;text-transform:uppercase;letter-spacing:1.2px;color:var(--px-muted);margin:0 0 12px}
 .pro-footer-col a{display:block;color:var(--px-text);text-decoration:none;padding:6px 0;font-size:14px;font-weight:500}
 .pro-footer-col a:hover{color:var(--px-red)}
 .pro-footer-base{text-align:center;color:var(--px-muted);font-size:13px;margin-top:34px}
@@ -188,7 +188,21 @@ code{background:#0c0e13;padding:4px 8px;border-radius:6px;font-size:13px}
   .gallery{grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
   .g-card{border-radius:12px}
   .g-meta{padding:8px 9px}
-  .g-meta h4{font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .g-meta h3{font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .g-tag{font-size:9.5px}
   .g-lock{width:26px;height:26px;font-size:12px;top:8px;right:8px}
 }
+
+/* USABILITY FIXES 2026-10-28 — homepage audit (8 issues) */
+.hero-cine{min-height:min(84vh,680px);padding:80px 24px 84px}
+.hero-sub{font-size:16px}
+.stats span,.trust-row span,.pro-footer-base{font-size:14px}
+:root{--px-radius:16px}
+.btn{border-radius:16px}
+.btn.small{border-radius:12px}
+.hero{border-radius:24px}
+:focus-visible{border-radius:12px}
+.eyebrow::before{border-radius:12px}
+.cta-banner{background:var(--px-surface)}
+.pro-footer-inner{grid-template-columns:minmax(0,1fr) auto auto;column-gap:64px}
+@media(max-width:640px){.pro-footer-inner{grid-template-columns:1fr 1fr}}
