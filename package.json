@@ -15,7 +15,7 @@
   "name": "viral-clips",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/phase2.test.js"
+    "test": "node --test tests/phase2.test.js tests/phase3.test.js"
   },
   "version": "1.0.0"
 }

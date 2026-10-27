@@ -6,6 +6,7 @@ const express = require('express');
 const compression = require('compression');
 const crypto = require('crypto');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 const cookieParser = require('cookie-parser');
 const QRCode = require('qrcode');
@@ -56,6 +57,36 @@ if (R2_ON) {
   });
   s3Commands = s3lib;
   getSignedUrl = require('@aws-sdk/s3-request-presigner').getSignedUrl;
+}
+
+// ---------------- automated DB backups to R2 (Phase 3) ----------------
+// A consistent snapshot (VACUUM INTO) is uploaded to the owner's own R2
+// bucket every 6 hours, keeping the newest 20. The database is small, so
+// 20 backups cost almost nothing against the 10 GB free tier. Backups
+// hold customer names, phones and UTRs — they live in the same bucket
+// and account as the videos, nowhere else.
+const BACKUP_PREFIX = 'backups/';
+const BACKUP_KEEP = 20;
+const BACKUP_EVERY_MS = 6 * 3600 * 1000;
+async function runBackup() {
+  if (!R2_ON) return { ok: false, reason: 'R2 is not configured — backups need R2.' };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vc-backup-'));
+  const snap = path.join(dir, 'viral-clips.db');
+  try {
+    db.exec(`VACUUM INTO '${snap.replace(/'/g, "''")}'`);
+    const body = fs.readFileSync(snap);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const key = BACKUP_PREFIX + 'viral-clips-' + stamp + '.db';
+    await s3.send(new s3Commands.PutObjectCommand({ Bucket: R2_BUCKET, Key: key, Body: body }));
+    const listed = await s3.send(new s3Commands.ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: BACKUP_PREFIX }));
+    const objs = (listed.Contents || []).sort((a, b) => a.LastModified - b.LastModified);
+    for (const o of objs.slice(0, Math.max(0, objs.length - BACKUP_KEEP))) {
+      await s3.send(new s3Commands.DeleteObjectCommand({ Bucket: R2_BUCKET, Key: o.Key }));
+    }
+    return { ok: true, key, size: body.length };
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* temp cleanup is best-effort */ }
+  }
 }
 
 const PLANS = [
@@ -648,6 +679,39 @@ app.get('/api/admin/errors', requireAdmin, (req, res) => {
   res.json(rows);
 });
 
+// ---- backups + usage (Phase 3) ----
+app.post('/api/admin/backup', requireAdmin, requireCsrf, async (req, res) => {
+  try {
+    const r = await runBackup();
+    if (!r.ok) return res.status(503).json({ error: 'backup_unavailable', message: r.reason });
+    res.json({ ok: true, key: r.key, size: r.size });
+  } catch (e) {
+    res.status(500).json({ error: 'backup_failed', message: e.message });
+  }
+});
+
+function dirSize(root) {
+  let total = 0;
+  try {
+    for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
+      const p = path.join(root, ent.name);
+      if (ent.isDirectory()) total += dirSize(p);
+      else if (ent.isFile()) { try { total += fs.statSync(p).size; } catch (e) {} }
+    }
+  } catch (e) { /* a missing dir counts as zero */ }
+  return total;
+}
+
+app.get('/api/admin/usage', requireAdmin, (req, res) => {
+  const dbFile = process.env.DB_PATH || path.join(__dirname, 'viral-clips.db');
+  let dbSize = 0;
+  try { dbSize = fs.statSync(dbFile).size; } catch (e) {}
+  const videos = db.prepare('SELECT COUNT(*) AS c FROM videos').get().c;
+  const subs = db.prepare('SELECT COUNT(*) AS c FROM subscriptions').get().c;
+  const payments = db.prepare('SELECT COUNT(*) AS c FROM payments').get().c;
+  res.json({ dbSize, uploadsSize: dirSize(UPLOAD_DIR), videos, subscriptions: subs, payments });
+});
+
 // Public: teaser image file.
 app.get('/api/teaser-img/:id', rateLimit({ windowMs: 60000, max: 120 }), (req, res) => {
   const t = db.prepare('SELECT filename, mime FROM teasers WHERE id = ?').get(req.params.id);
@@ -677,6 +741,16 @@ app.use((err, req, res, next) => {
   if (req.path.startsWith('/api/')) return res.status(500).json({ error: 'server_error' });
   res.status(500).send('<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Something went wrong \u2014 VIRAL CLIPS</title></head><body style="background:#07080c;color:#f2f3f5;font-family:system-ui,sans-serif;text-align:center;padding:80px 20px"><h1>Something went wrong</h1><p style="color:#9aa0ab">Please try again in a bit.</p><a href="/" style="color:#ff2d55;font-weight:700">Back to homepage</a></body></html>');
 });
+
+// Phase 3: automatic backups — one shortly after startup, then every 6 hours.
+// Runs only when R2 is configured; failures are logged, never fatal.
+if (R2_ON) {
+  const doBackup = () => runBackup()
+    .then((r) => console.log('[backup]', r.ok ? 'saved ' + r.key : 'skipped: ' + r.reason))
+    .catch((e) => console.error('[backup] failed', e.message));
+  setTimeout(doBackup, 30000);
+  setInterval(doBackup, BACKUP_EVERY_MS);
+}
 
 app.listen(PORT, () => {
   console.log(`VIRAL CLIPS running on ${BASE_URL}`);

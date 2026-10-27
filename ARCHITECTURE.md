@@ -130,6 +130,19 @@ a Phase 3 item if the site ever runs on multiple instances.
   `{ok, storage: 'r2'|'local', uptime}` with no sensitive data.
 - **Monitoring (Phase 2):** an external check hits `/health` every
   30 minutes and alerts only when the site stops answering.
+- **Backups (Phase 3):** a consistent database snapshot (`VACUUM INTO`)
+  is uploaded to the owner's own R2 bucket 30 seconds after startup and
+  then every 6 hours, keeping the newest 20. A "Backup now" button in the
+  admin panel saves one on demand. Restore is manual on purpose: download
+  the newest `backups/viral-clips-*.db` file from R2, replace the file at
+  `DB_PATH`, restart the service. Without `R2_*` variables the backup
+  endpoint answers 503 — backups need R2.
+- **Usage visibility (Phase 3):** the admin Dashboard shows database size
+  and uploads-on-disk size (`GET /api/admin/usage`), plus a monthly
+  reminder to check the Cloudflare R2 usage (< 10 GB free tier) and
+  Railway usage dashboards. There is no automated billing API wired in —
+  the reminder is the control, and the numbers above are what it asks
+  about.
 - **CI (Phase 2):** GitHub Actions runs `npm test` on every push and
   pull request. It reports pass/fail on GitHub; it does NOT block
   Railway deploys (Railway deploys on push regardless).
@@ -167,16 +180,26 @@ Without the `R2_*` variables the site behaves exactly as before
 - **When to scale (Phase 3 triggers):** traffic that needs a CDN in
   front, spend that needs budget alerts, or concurrent writers that
   need a real database. None of these are needed yet.
-- **Single points of failure:** one Railway instance, one SQLite file,
-  manual backups. Automated DB backups are a Phase 3 item.
+- **Single points of failure:** one Railway instance, one SQLite file.
+  The database now also lives as timestamped copies in R2 (Phase 3), so
+  a lost disk costs at most 6 hours of data, not everything.
 
 ## 13. Phase status
 
 - **Phase 1 (done, live):** full rate-limit coverage, request logging,
   error middleware, branded 404 page, `/health` endpoint.
-- **Phase 2 (this delivery):** automated test suite, CI checks,
+- **Phase 2 (done, live):** automated test suite, CI checks,
   CSRF tokens, error tracking table + admin Errors tab, this document,
   30-minute health monitoring.
-- **Phase 3 (planned, not started):** Cloudflare CDN in front of the
-  site, automated DB backups, budget/spend alerts, scaling path
-  (multi-instance + database upgrade) when traffic demands it.
+- **Phase 3 (this delivery):** automated DB backups to R2 (6-hour
+  interval + admin button, newest 20 kept), admin usage panel, monthly
+  usage-check reminder. Scaling stays a written plan (below), not code,
+  until traffic demands it.
+- **CDN (decision pending, not a build yet):** videos already stream
+  from Cloudflare's edge via R2, and pages are tiny with gzip + cache
+  headers, so a full-site CDN adds little today. A full CDN in front of
+  the whole site needs the owner's own domain (roughly ₹800–1,200/year)
+  — the site currently lives on a Railway subdomain, which Cloudflare
+  cannot front directly. When a domain is bought, the path is: add it to
+  Cloudflare (free plan), point DNS at Railway, then the whole site sits
+  behind Cloudflare's edge and protection.
