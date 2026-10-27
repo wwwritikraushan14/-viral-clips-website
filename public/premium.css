@@ -182,3 +182,13 @@ code{background:#0c0e13;padding:4px 8px;border-radius:6px;font-size:13px}
   .video-card h4{padding:7px 8px 9px;font-size:11.5px;line-height:1.35;min-height:32px}
 }
 .video-card h4{margin:0;padding:12px 14px 15px;font-size:14.5px;font-weight:600;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:41px;word-break:break-word}
+
+/* MOBILE GALLERY FIX 2026-10-28 — small phone grid, never one giant column */
+@media (max-width:640px){
+  .gallery{grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+  .g-card{border-radius:12px}
+  .g-meta{padding:8px 9px}
+  .g-meta h4{font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .g-tag{font-size:9.5px}
+  .g-lock{width:26px;height:26px;font-size:12px;top:8px;right:8px}
+}
