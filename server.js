@@ -23,6 +23,17 @@ const IS_HTTPS = BASE_URL.startsWith('https://'); // secure cookies only over HT
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+// ---- error tracking (Phase 2): recent server errors, capped at 100 rows ----
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`);
+} catch (e) { /* error tracking is best-effort */ }
+
 // ---------------- video storage: Cloudflare R2 (optional) ----------------
 // When R2_* variables are set, NEW video uploads go to the R2 bucket and
 // members stream straight from Cloudflare — the Railway disk then only
@@ -395,6 +406,22 @@ app.get('/api/teasers', rateLimit({ windowMs: 60000, max: 120 }), (req, res) => 
   res.json(db.prepare('SELECT id, title FROM teasers ORDER BY created_at DESC').all());
 });
 
+// ---- CSRF protection (Phase 2): double-submit cookie ----
+// Login sets a readable vc_csrf cookie; the admin panel sends it back as
+// x-csrf-token on every state-changing request. sameSite=lax cookies
+// already block most cross-site posts; this closes the rest.
+function requireCsrf(req, res, next) {
+  const sent = req.headers['x-csrf-token'];
+  const cookie = req.cookies.vc_csrf;
+  if (!sent || !cookie || sent.length !== cookie.length) {
+    return res.status(403).json({ error: 'bad_csrf', message: 'Missing or invalid CSRF token.' });
+  }
+  if (!crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(cookie))) {
+    return res.status(403).json({ error: 'bad_csrf', message: 'Missing or invalid CSRF token.' });
+  }
+  next();
+}
+
 // ---- admin ----
 app.post('/api/admin/login', rateLimit({ windowMs: 60000, max: 8 }), (req, res) => {
   const { password } = req.body || {};
@@ -403,12 +430,14 @@ app.post('/api/admin/login', rateLimit({ windowMs: 60000, max: 8 }), (req, res) 
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
   if (!ok) return res.status(401).json({ error: 'wrong_password' });
   res.cookie('vc_admin', adminToken(), { httpOnly: true, sameSite: 'lax', secure: IS_HTTPS, maxAge: ADMIN_SESSION_MS });
+  res.cookie('vc_csrf', crypto.randomBytes(24).toString('hex'), { httpOnly: false, sameSite: 'lax', secure: IS_HTTPS, maxAge: ADMIN_SESSION_MS });
   res.json({ ok: true });
 });
 
 app.post('/api/admin/logout', requireAdmin, (req, res) => {
   try { db.prepare('DELETE FROM admin_sessions WHERE id = ?').run(req.cookies.vc_admin); } catch (e) { /* legacy cleanup is best-effort */ }
   res.clearCookie('vc_admin');
+  res.clearCookie('vc_csrf');
   res.json({ ok: true });
 });
 
@@ -419,7 +448,7 @@ app.get('/api/admin/payments', requireAdmin, (req, res) => {
 });
 
 // Approve -> creates the one-time one-device magic link, emails it.
-app.post('/api/admin/approve', requireAdmin, async (req, res) => {
+app.post('/api/admin/approve', requireAdmin, requireCsrf, async (req, res) => {
   const { paymentId } = req.body || {};
   const payment = db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId);
   if (!payment || payment.status !== 'pending') {
@@ -448,7 +477,7 @@ app.post('/api/admin/approve', requireAdmin, async (req, res) => {
   res.json({ ok: true, link, phone: payment.phone || '', email: emailResult });
 });
 
-app.post('/api/admin/reject', requireAdmin, (req, res) => {
+app.post('/api/admin/reject', requireAdmin, requireCsrf, (req, res) => {
   const { paymentId } = req.body || {};
   db.prepare("UPDATE payments SET status = 'rejected' WHERE id = ? AND status = 'pending'").run(paymentId);
   res.json({ ok: true });
@@ -476,13 +505,13 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
 });
 
 // Revoke a subscriber's access immediately.
-app.delete('/api/admin/subscriptions/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/subscriptions/:id', requireAdmin, requireCsrf, (req, res) => {
   db.prepare('DELETE FROM subscriptions WHERE id=?').run(req.params.id);
   res.json({ ok: true });
 });
 
 // Extend a subscription by N months (1-24).
-app.post('/api/admin/subscriptions/:id/extend', requireAdmin, (req, res) => {
+app.post('/api/admin/subscriptions/:id/extend', requireAdmin, requireCsrf, (req, res) => {
   const months = Math.max(1, Math.min(24, Number(req.body?.months) || 1));
   const sub = db.prepare('SELECT expires_at FROM subscriptions WHERE id=?').get(req.params.id);
   if (!sub) return res.status(404).json({ error: 'not_found' });
@@ -523,7 +552,7 @@ const uploadR2 = multer({
   limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB
 });
 
-app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, (req, res) => {
+app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, requireCsrf, (req, res) => {
   const handler = R2_ON ? uploadR2.single('video') : upload.single('video');
   handler(req, res, async (err) => {
     if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
@@ -553,7 +582,7 @@ app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), require
   });
 });
 
-app.delete('/api/admin/videos/:id', requireAdmin, async (req, res) => {
+app.delete('/api/admin/videos/:id', requireAdmin, requireCsrf, async (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'not_found' });
   // Free the actual file FIRST: on a full disk, removing the file is what
@@ -588,7 +617,7 @@ const teaserUpload = multer({
   limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
 });
 
-app.post('/api/admin/teasers', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, (req, res) => {
+app.post('/api/admin/teasers', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, requireCsrf, (req, res) => {
   teaserUpload.single('image')(req, res, (err) => {
     if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
     if (!req.file) return res.status(400).json({ error: 'no_file' });
@@ -600,7 +629,7 @@ app.post('/api/admin/teasers', rateLimit({ windowMs: 3600000, max: 30 }), requir
   });
 });
 
-app.delete('/api/admin/teasers/:id', requireAdmin, (req, res) => {
+app.delete('/api/admin/teasers/:id', requireAdmin, requireCsrf, (req, res) => {
   const t = db.prepare('SELECT * FROM teasers WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'not_found' });
   db.prepare('DELETE FROM teasers WHERE id = ?').run(t.id);
@@ -611,6 +640,12 @@ app.delete('/api/admin/teasers/:id', requireAdmin, (req, res) => {
 
 app.get('/api/admin/teasers', requireAdmin, (req, res) => {
   res.json(db.prepare('SELECT id, title, size, created_at FROM teasers ORDER BY created_at DESC').all());
+});
+
+// ---- error tracking (Phase 2): recent errors for the admin panel ----
+app.get('/api/admin/errors', requireAdmin, (req, res) => {
+  const rows = db.prepare('SELECT id, method, path, message, created_at FROM errors ORDER BY id DESC LIMIT 50').all();
+  res.json(rows);
 });
 
 // Public: teaser image file.
@@ -633,6 +668,11 @@ app.use((req, res) => {
 // ---- error handler (Phase 1): log it, never leak internals to visitors ----
 app.use((err, req, res, next) => {
   console.error('[error]', req.method, req.path, err && err.message);
+  try {
+    const msg = String((err && err.message) || 'unknown error').slice(0, 200);
+    db.prepare('INSERT INTO errors (method, path, message, created_at) VALUES (?, ?, ?, ?)').run(req.method, req.path, msg, Date.now());
+    db.prepare('DELETE FROM errors WHERE id NOT IN (SELECT id FROM errors ORDER BY id DESC LIMIT 100)').run();
+  } catch (e) { /* error tracking must never break error responses */ }
   if (res.headersSent) return next(err);
   if (req.path.startsWith('/api/')) return res.status(500).json({ error: 'server_error' });
   res.status(500).send('<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Something went wrong \u2014 VIRAL CLIPS</title></head><body style="background:#07080c;color:#f2f3f5;font-family:system-ui,sans-serif;text-align:center;padding:80px 20px"><h1>Something went wrong</h1><p style="color:#9aa0ab">Please try again in a bit.</p><a href="/" style="color:#ff2d55;font-weight:700">Back to homepage</a></body></html>');

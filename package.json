@@ -10,11 +10,12 @@
     "nodemailer": "^6.10.0",
     "qrcode": "^1.5.4"
   },
-  "description": "VIRAL CLIPS — paid video subscription site with UPI QR payments, manual approval, one-time one-device magic links and auto-expiry.",
+  "description": "VIRAL CLIPS \u2014 paid video subscription site with UPI QR payments, manual approval, one-time one-device magic links and auto-expiry.",
   "main": "server.js",
   "name": "viral-clips",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/phase2.test.js"
   },
   "version": "1.0.0"
 }
