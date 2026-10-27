@@ -19,6 +19,9 @@ const PORT = process.env.PORT || 3000;
 const UPI_ID = process.env.UPI_ID || 'ritik170501@ptyes';
 const PAYEE_NAME = process.env.PAYEE_NAME || 'VIRAL CLIPS';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me-now';
+// A missing ADMIN_PASSWORD must never fall back to a usable login: the
+// well-known default above is treated as "no admin access at all".
+const ADMIN_PASSWORD_SET = Boolean(process.env.ADMIN_PASSWORD) && ADMIN_PASSWORD !== 'change-me-now';
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const IS_HTTPS = BASE_URL.startsWith('https://'); // secure cookies only over HTTPS
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
@@ -228,6 +231,12 @@ function requireAdmin(req, res, next) {
   if (validAdminToken(sid)) return next(); // signed cookie — no DB lookup needed
   const row = db.prepare('SELECT * FROM admin_sessions WHERE id = ?').get(sid); // legacy DB sessions
   if (!row) return res.status(401).json({ error: 'admin_login_required' });
+  // Legacy sessions never had an expiry — enforce the same 12-hour life
+  // as signed cookies, and drop dead rows instead of honouring them forever.
+  if (Date.now() - row.created_at > ADMIN_SESSION_MS) {
+    try { db.prepare('DELETE FROM admin_sessions WHERE id = ?').run(sid); } catch (e) {}
+    return res.status(401).json({ error: 'admin_login_required' });
+  }
   next();
 }
 
@@ -242,6 +251,7 @@ function adminToken() {
   return exp + '.' + sig;
 }
 function validAdminToken(tok) {
+  if (!ADMIN_PASSWORD_SET) return false; // no real password -> no sessions, not even old ones
   const parts = String(tok || '').split('.');
   if (parts.length !== 2) return false;
   const [exp, sig] = parts;
@@ -249,6 +259,15 @@ function validAdminToken(tok) {
   const want = crypto.createHmac('sha256', ADMIN_PASSWORD).update('vc-admin:' + exp).digest('hex');
   const a = Buffer.from(sig), b = Buffer.from(want);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Login comparison on hashes: a wrong password must never leak the real
+// password's length through timing (the old length check short-circuited).
+function passwordMatches(password) {
+  if (!ADMIN_PASSWORD_SET) return false;
+  const a = crypto.createHash('sha256').update(String(password || '')).digest();
+  const b = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
+  return crypto.timingSafeEqual(a, b);
 }
 
 function page(title, heading, message, cta) {
@@ -259,6 +278,13 @@ function page(title, heading, message, cta) {
 ${cta || '<a class="btn" href="/">Back to home</a>'}
 </div></div></body></html>`;
 }
+
+// ---- async safety (security audit): Express 4 does not forward rejected
+// promises from async route handlers to the error middleware — an
+// unexpected throw (full disk, vanished file) would otherwise become an
+// unhandled rejection and can crash the whole server. Wrap async routes
+// so every failure becomes a clean generic 500 instead.
+const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // ---------------- app ----------------
 const app = express();
@@ -274,6 +300,9 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // No includeSubDomains: this host lives on Railway's shared domain.
+  // (On plain HTTP the header is ignored by browsers, so local dev is unaffected.)
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   // CSP: allow self + inline (pages use inline scripts/styles); videos from self (+ R2 when configured); QR is data: URL
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
@@ -281,23 +310,36 @@ app.use((req, res, next) => {
   next();
 });
 
+// Magic-link tokens travel in the URL path (/access/<token>), so plain
+// path logging would store live tokens in Railway logs and the errors
+// table. Redact that one segment everywhere a path is recorded.
+const redactPath = (p) => String(p || '').replace(/^\/access\/[^/]+/, '/access/[redacted]');
+
 // ---- request logging (Phase 1) ----
 // Logs method + path + status + time only. req.path never includes the
 // query string (which can carry tokens), and we never log cookies/bodies.
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
-    console.log(`[req] ${req.method} ${req.path} ${res.statusCode} ${Date.now() - start}ms`);
+    console.log(`[req] ${req.method} ${redactPath(req.path)} ${res.statusCode} ${Date.now() - start}ms`);
   });
   next();
 });
 
 // ---- simple in-memory rate limiter ----
 const buckets = new Map();
+const RATE_BUCKETS_MAX = 5000;
 function rateLimit({ windowMs, max }) {
   return (req, res, next) => {
     const key = (req.ip || '') + req.path;
     const now = Date.now();
+    // Bound memory: drop expired buckets, and if still over the cap drop
+    // the oldest entries first (Map keeps insertion order). An evicted
+    // visitor simply gets a fresh budget — never a crash, never a block.
+    if (buckets.size > RATE_BUCKETS_MAX) {
+      for (const [k, b] of buckets) { if (now > b.reset) buckets.delete(k); }
+      while (buckets.size > RATE_BUCKETS_MAX) { buckets.delete(buckets.keys().next().value); }
+    }
     let b = buckets.get(key);
     if (!b || now > b.reset) b = { count: 0, reset: now + windowMs };
     b.count++;
@@ -321,13 +363,13 @@ app.get('/api/plans', (req, res) => res.json(PLANS));
 // ---- health check (Phase 1): for uptime monitoring, no sensitive data ----
 app.get('/health', (req, res) => res.json({ ok: true, storage: R2_ON ? 'r2' : 'local', uptime: Math.floor(process.uptime()) }));
 
-app.get('/api/qr/:planId', rateLimit({ windowMs: 60000, max: 30 }), async (req, res) => {
+app.get('/api/qr/:planId', rateLimit({ windowMs: 60000, max: 30 }), ah(async (req, res) => {
   const plan = planById(req.params.planId);
   if (!plan) return res.status(404).json({ error: 'unknown_plan' });
   const upiUrl = `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=${encodeURIComponent(PAYEE_NAME)}&am=${plan.price}&cu=INR&tn=${encodeURIComponent('VIRALCLIPS-' + plan.id)}`;
   const qr = await QRCode.toDataURL(upiUrl, { width: 320, margin: 1 });
   res.json({ qr, upiId: UPI_ID, payee: PAYEE_NAME, amount: plan.price, upiUrl });
-});
+}));
 
 // Customer submits payment proof after paying via UPI app.
 app.post('/api/payments', rateLimit({ windowMs: 60000, max: 10 }), (req, res) => {
@@ -347,9 +389,19 @@ app.post('/api/payments', rateLimit({ windowMs: 60000, max: 10 }), (req, res) =>
   if (digits.length < 10 || digits.length > 13) {
     return res.status(400).json({ error: 'bad_phone', message: 'Please enter a valid 10-digit mobile number.' });
   }
-  const info = db.prepare(
-    'INSERT INTO payments (name, email, phone, plan_id, amount, utr, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(name.trim(), emailClean, digits, plan.id, plan.price, utr.trim(), Date.now());
+  let info;
+  try {
+    info = db.prepare(
+      'INSERT INTO payments (name, email, phone, plan_id, amount, utr, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(name.trim(), emailClean, digits, plan.id, plan.price, utr.trim(), Date.now());
+  } catch (e) {
+    // UTRs are unique per UPI transaction: the same proof twice would
+    // otherwise create two pending rows that could both be approved.
+    if (/UNIQUE constraint/i.test(e.message)) {
+      return res.status(400).json({ error: 'duplicate_utr', message: 'This UTR / transaction ID was already submitted.' });
+    }
+    throw e;
+  }
   res.json({ ok: true, paymentId: Number(info.lastInsertRowid),
     message: 'Payment details received. You will get your private access link on WhatsApp once verified.' });
 });
@@ -391,7 +443,7 @@ app.get('/api/videos', requireSubscriber, (req, res) => {
 });
 
 // Token-gated video streaming with range support.
-app.get('/api/stream/:id', requireSubscriber, async (req, res) => {
+app.get('/api/stream/:id', requireSubscriber, ah(async (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'not_found' });
   // Cloudflare R2 video: hand the member a private signed link (valid 6h)
@@ -413,12 +465,16 @@ app.get('/api/stream/:id', requireSubscriber, async (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'file_missing' });
   const stat = fs.statSync(filePath);
   const range = req.headers.range;
-  const contentType = video.mime || 'video/mp4';
+  // Never trust the stored mime type for the response header: only a
+  // video/* type is served, anything else falls back to mp4.
+  const contentType = (video.mime || '').startsWith('video/') ? video.mime : 'video/mp4';
   if (range) {
     const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
     const start = parseInt(startStr, 10);
-    const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
-    if (isNaN(start) || start >= stat.size) return res.status(416).send('Range not satisfiable');
+    // Clamp the end to the real file size: an end past EOF would declare
+    // a Content-Length the body never reaches, hanging the player.
+    const end = Math.min(endStr ? parseInt(endStr, 10) : stat.size - 1, stat.size - 1);
+    if (isNaN(start) || isNaN(end) || start > end || start >= stat.size) return res.status(416).send('Range not satisfiable');
     res.writeHead(206, {
       'Content-Range': `bytes ${start}-${end}/${stat.size}`,
       'Accept-Ranges': 'bytes',
@@ -430,7 +486,7 @@ app.get('/api/stream/:id', requireSubscriber, async (req, res) => {
     res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': contentType, 'Accept-Ranges': 'bytes' });
     fs.createReadStream(filePath).pipe(res);
   }
-});
+}));
 
 // Public teasers: homepage gallery photos uploaded via the admin panel.
 app.get('/api/teasers', rateLimit({ windowMs: 60000, max: 120 }), (req, res) => {
@@ -453,13 +509,11 @@ function requireCsrf(req, res, next) {
   next();
 }
 
+
 // ---- admin ----
 app.post('/api/admin/login', rateLimit({ windowMs: 60000, max: 8 }), (req, res) => {
   const { password } = req.body || {};
-  const a = Buffer.from(String(password || ''));
-  const b = Buffer.from(ADMIN_PASSWORD);
-  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-  if (!ok) return res.status(401).json({ error: 'wrong_password' });
+  if (!passwordMatches(password)) return res.status(401).json({ error: 'wrong_password' });
   res.cookie('vc_admin', adminToken(), { httpOnly: true, sameSite: 'lax', secure: IS_HTTPS, maxAge: ADMIN_SESSION_MS });
   res.cookie('vc_csrf', crypto.randomBytes(24).toString('hex'), { httpOnly: false, sameSite: 'lax', secure: IS_HTTPS, maxAge: ADMIN_SESSION_MS });
   res.json({ ok: true });
@@ -467,8 +521,10 @@ app.post('/api/admin/login', rateLimit({ windowMs: 60000, max: 8 }), (req, res) 
 
 app.post('/api/admin/logout', requireAdmin, (req, res) => {
   try { db.prepare('DELETE FROM admin_sessions WHERE id = ?').run(req.cookies.vc_admin); } catch (e) { /* legacy cleanup is best-effort */ }
-  res.clearCookie('vc_admin');
-  res.clearCookie('vc_csrf');
+  // Pass the same flags the cookies were set with, or some browsers keep
+  // the old (Secure) cookie and the "logout" silently does nothing.
+  res.clearCookie('vc_admin', { httpOnly: true, sameSite: 'lax', secure: IS_HTTPS });
+  res.clearCookie('vc_csrf', { sameSite: 'lax', secure: IS_HTTPS });
   res.json({ ok: true });
 });
 
@@ -479,7 +535,7 @@ app.get('/api/admin/payments', requireAdmin, (req, res) => {
 });
 
 // Approve -> creates the one-time one-device magic link, emails it.
-app.post('/api/admin/approve', requireAdmin, requireCsrf, async (req, res) => {
+app.post('/api/admin/approve', requireAdmin, requireCsrf, ah(async (req, res) => {
   const { paymentId } = req.body || {};
   const payment = db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId);
   if (!payment || payment.status !== 'pending') {
@@ -492,7 +548,12 @@ app.post('/api/admin/approve', requireAdmin, requireCsrf, async (req, res) => {
   const expiresAt = plan.months ? Date.now() + plan.months * 30 * 86400000 : null;
   const link = `${BASE_URL}/access/${token}`;
 
-  db.prepare('UPDATE payments SET status = ? WHERE id = ?').run('approved', payment.id);
+  // Atomic claim: if two approvals race (double-click, double tab), only
+  // the first wins; the second sees 0 changed rows and stops here.
+  const claimed = db.prepare("UPDATE payments SET status = 'approved' WHERE id = ? AND status = 'pending'").run(payment.id);
+  if (claimed.changes !== 1) {
+    return res.status(400).json({ error: 'bad_payment', message: 'Payment not found or already handled.' });
+  }
   db.prepare(
     'INSERT INTO subscriptions (payment_id, name, email, phone, plan_id, token, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(payment.id, payment.name, payment.email, payment.phone || '', plan.id, token, expiresAt, Date.now());
@@ -506,7 +567,7 @@ app.post('/api/admin/approve', requireAdmin, requireCsrf, async (req, res) => {
     }
   }
   res.json({ ok: true, link, phone: payment.phone || '', email: emailResult });
-});
+}));
 
 app.post('/api/admin/reject', requireAdmin, requireCsrf, (req, res) => {
   const { paymentId } = req.body || {};
@@ -541,6 +602,16 @@ app.delete('/api/admin/subscriptions/:id', requireAdmin, requireCsrf, (req, res)
   res.json({ ok: true });
 });
 
+// Let a device-locked subscriber start over: clears the first-open bind so
+// the same link can be opened fresh on the subscriber's current device.
+// (Without this, a subscriber whose phone changed network/IP had no way
+// back in short of deleting and re-creating their subscription.)
+app.post('/api/admin/subscriptions/:id/reset-device', requireAdmin, requireCsrf, (req, res) => {
+  const info = db.prepare('UPDATE subscriptions SET used_at = NULL, device_fp = NULL WHERE id = ?').run(req.params.id);
+  if (info.changes !== 1) return res.status(404).json({ error: 'not_found' });
+  res.json({ ok: true });
+});
+
 // Extend a subscription by N months (1-24).
 app.post('/api/admin/subscriptions/:id/extend', requireAdmin, requireCsrf, (req, res) => {
   const months = Math.max(1, Math.min(24, Number(req.body?.months) || 1));
@@ -559,17 +630,27 @@ app.get('/api/admin/subscriptions/:id/link', requireAdmin, (req, res) => {
   res.json({ link: `${BASE_URL}/access/${sub.token}` });
 });
 
-// Video upload (admin).
+// Video upload (admin). Extensions are allow-listed, not just the
+// client-claimed mime type: a file claiming to be a video but named
+// .html/.svg must never be stored or served back with a trusted type.
+const VIDEO_EXTS = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.3gp'];
+const IMAGE_EXTS = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' };
+// Multer's default "File too large" tells the admin nothing — translate it.
+function uploadErrMessage(err, what, limitText) {
+  if (err && err.code === 'LIMIT_FILE_SIZE') return `${what} is too large — keep it under ${limitText}.`;
+  return err ? err.message : 'Upload failed';
+}
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOAD_DIR,
     filename: (req, file, cb) => cb(null, Date.now() + '-' + crypto.randomBytes(6).toString('hex') + path.extname(file.originalname)),
   }),
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('video/')) cb(null, true);
-    else cb(new Error('Only video files are allowed'));
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (file.mimetype.startsWith('video/') && VIDEO_EXTS.includes(ext)) cb(null, true);
+    else cb(new Error('Only video files are allowed (' + VIDEO_EXTS.join(', ') + ')'));
   },
-  limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB (disk-streamed, no RAM issue)
 });
 
 // R2 mode: hold the file in memory briefly, then send it to Cloudflare —
@@ -577,18 +658,29 @@ const upload = multer({
 const uploadR2 = multer({
   storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('video/')) cb(null, true);
-    else cb(new Error('Only video files are allowed'));
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (file.mimetype.startsWith('video/') && VIDEO_EXTS.includes(ext)) cb(null, true);
+    else cb(new Error('Only video files are allowed (' + VIDEO_EXTS.join(', ') + ')'));
   },
-  limits: { fileSize: 1024 * 1024 * 1024 }, // 1 GB
+  // Memory storage holds the whole file in RAM: 1 GB here could OOM-kill
+  // the whole server on a small Railway container. 300 MB fails gracefully
+  // with a clear message instead of taking the site down for everyone.
+  limits: { fileSize: 300 * 1024 * 1024 },
 });
 
-app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, requireCsrf, (req, res) => {
+app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, requireCsrf, (req, res, next) => {
   const handler = R2_ON ? uploadR2.single('video') : upload.single('video');
   handler(req, res, async (err) => {
-    if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
+    try {
+    if (err) return res.status(400).json({ error: 'upload_failed', message: uploadErrMessage(err, 'Video', R2_ON ? '300 MB in cloud mode' : '1 GB') });
     if (!req.file) return res.status(400).json({ error: 'no_file' });
     const title = (req.body.title || path.parse(req.file.originalname).name).trim();
+    if (title.length > 120) {
+      // Reject before anything else is stored; remove the local file
+      // multer just wrote (R2 mode has nothing to clean — upload is below).
+      if (!R2_ON) { try { fs.unlinkSync(req.file.path); } catch (e) {} }
+      return res.status(400).json({ error: 'title_too_long', message: 'Title must be 120 characters or less.' });
+    }
     if (R2_ON) {
       const key = 'videos/' + Date.now() + '-' + crypto.randomBytes(6).toString('hex') + path.extname(req.file.originalname);
       try {
@@ -599,7 +691,8 @@ app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), require
           ContentType: req.file.mimetype,
         }));
       } catch (e) {
-        return res.status(502).json({ error: 'storage_error', message: 'Upload to Cloudflare failed: ' + e.message });
+        console.error('[upload] R2 put failed:', e.message);
+        return res.status(502).json({ error: 'storage_error', message: 'Could not upload to video storage. Try again.' });
       }
       const info = db.prepare(
         'INSERT INTO videos (title, filename, mime, size, storage, created_at) VALUES (?, ?, ?, ?, ?, ?)'
@@ -610,10 +703,11 @@ app.post('/api/admin/videos', rateLimit({ windowMs: 3600000, max: 30 }), require
       'INSERT INTO videos (title, filename, mime, size, storage, created_at) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(title, req.file.filename, req.file.mimetype, req.file.size, 'local', Date.now());
     res.json({ ok: true, id: Number(info.lastInsertRowid), title });
+    } catch (e) { next(e); }
   });
 });
 
-app.delete('/api/admin/videos/:id', requireAdmin, requireCsrf, async (req, res) => {
+app.delete('/api/admin/videos/:id', requireAdmin, requireCsrf, ah(async (req, res) => {
   const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
   if (!video) return res.status(404).json({ error: 'not_found' });
   // Free the actual file FIRST: on a full disk, removing the file is what
@@ -629,7 +723,7 @@ app.delete('/api/admin/videos/:id', requireAdmin, requireCsrf, async (req, res) 
   }
   db.prepare('DELETE FROM videos WHERE id = ?').run(video.id);
   res.json({ ok: true });
-});
+}));
 
 app.get('/api/admin/videos', requireAdmin, (req, res) => {
   res.json(db.prepare('SELECT id, title, size, created_at FROM videos ORDER BY created_at DESC').all());
@@ -642,21 +736,28 @@ const teaserUpload = multer({
     filename: (req, file, cb) => cb(null, 'teaser-' + Date.now() + '-' + crypto.randomBytes(6).toString('hex') + path.extname(file.originalname)),
   }),
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files are allowed'));
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (file.mimetype.startsWith('image/') && IMAGE_EXTS[ext]) cb(null, true);
+    else cb(new Error('Only photo files are allowed (.jpg, .png, .webp, .gif) — SVG is not allowed'));
   },
   limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
 });
 
-app.post('/api/admin/teasers', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, requireCsrf, (req, res) => {
+app.post('/api/admin/teasers', rateLimit({ windowMs: 3600000, max: 30 }), requireAdmin, requireCsrf, (req, res, next) => {
   teaserUpload.single('image')(req, res, (err) => {
-    if (err) return res.status(400).json({ error: 'upload_failed', message: err.message });
+    try {
+    if (err) return res.status(400).json({ error: 'upload_failed', message: uploadErrMessage(err, 'Photo', '15 MB') });
     if (!req.file) return res.status(400).json({ error: 'no_file' });
     const title = (req.body.title || path.parse(req.file.originalname).name).trim();
+    if (title.length > 120) {
+      try { fs.unlinkSync(req.file.path); } catch (e) {}
+      return res.status(400).json({ error: 'title_too_long', message: 'Title must be 120 characters or less.' });
+    }
     const info = db.prepare(
       'INSERT INTO teasers (title, filename, mime, size, created_at) VALUES (?, ?, ?, ?, ?)'
     ).run(title, req.file.filename, req.file.mimetype, req.file.size, Date.now());
     res.json({ ok: true, id: Number(info.lastInsertRowid), title });
+    } catch (e) { next(e); }
   });
 });
 
@@ -686,7 +787,8 @@ app.post('/api/admin/backup', requireAdmin, requireCsrf, async (req, res) => {
     if (!r.ok) return res.status(503).json({ error: 'backup_unavailable', message: r.reason });
     res.json({ ok: true, key: r.key, size: r.size });
   } catch (e) {
-    res.status(500).json({ error: 'backup_failed', message: e.message });
+    console.error('[backup] failed:', e.message);
+    res.status(500).json({ error: 'backup_failed', message: 'Backup failed. Try again.' });
   }
 });
 
@@ -713,12 +815,16 @@ app.get('/api/admin/usage', requireAdmin, (req, res) => {
 });
 
 // Public: teaser image file.
+// Teaser images are public, so their Content-Type must come from the file
+// extension (never the uploader-supplied mime), and the response is
+// sandboxed so even a crafted image file can never run scripts here.
 app.get('/api/teaser-img/:id', rateLimit({ windowMs: 60000, max: 120 }), (req, res) => {
-  const t = db.prepare('SELECT filename, mime FROM teasers WHERE id = ?').get(req.params.id);
+  const t = db.prepare('SELECT filename FROM teasers WHERE id = ?').get(req.params.id);
   if (!t) return res.status(404).end();
   const fp = path.join(UPLOAD_DIR, path.basename(t.filename));
   if (!fs.existsSync(fp)) return res.status(404).end();
-  res.setHeader('Content-Type', t.mime || 'image/jpeg');
+  res.setHeader('Content-Type', IMAGE_EXTS[path.extname(t.filename).toLowerCase()] || 'application/octet-stream');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   res.setHeader('Cache-Control', 'public, max-age=86400');
   fs.createReadStream(fp).pipe(res);
 });
@@ -731,10 +837,10 @@ app.use((req, res) => {
 
 // ---- error handler (Phase 1): log it, never leak internals to visitors ----
 app.use((err, req, res, next) => {
-  console.error('[error]', req.method, req.path, err && err.message);
+  console.error('[error]', req.method, redactPath(req.path), err && err.message);
   try {
     const msg = String((err && err.message) || 'unknown error').slice(0, 200);
-    db.prepare('INSERT INTO errors (method, path, message, created_at) VALUES (?, ?, ?, ?)').run(req.method, req.path, msg, Date.now());
+    db.prepare('INSERT INTO errors (method, path, message, created_at) VALUES (?, ?, ?, ?)').run(req.method, redactPath(req.path), msg, Date.now());
     db.prepare('DELETE FROM errors WHERE id NOT IN (SELECT id FROM errors ORDER BY id DESC LIMIT 100)').run();
   } catch (e) { /* error tracking must never break error responses */ }
   if (res.headersSent) return next(err);
@@ -756,6 +862,6 @@ app.listen(PORT, () => {
   console.log(`VIRAL CLIPS running on ${BASE_URL}`);
   console.log(`Video storage: ${R2_ON ? 'Cloudflare R2 (bucket: ' + R2_BUCKET + ')' : 'local disk'}`);
   console.log(`Plans: ${PLANS.map((p) => `${p.name} ₹${p.price}`).join(' | ')}`);
-  if (ADMIN_PASSWORD === 'change-me-now') console.log('⚠ Set ADMIN_PASSWORD env var before going live.');
+  if (!ADMIN_PASSWORD_SET) console.log('⚠ ADMIN_PASSWORD is not set — admin login is DISABLED until it is set.');
   if (!process.env.RESEND_API_KEY && !process.env.BREVO_API_KEY) console.log('⚠ Email not configured — magic links will be shown in the admin panel to send manually.');
 });

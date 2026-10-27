@@ -66,4 +66,9 @@ for (const t of ['payments', 'subscriptions']) {
 try { db.exec(`ALTER TABLE videos ADD COLUMN storage TEXT NOT NULL DEFAULT 'local'`); }
 catch (e) { /* column already exists */ }
 
+// migration (security audit 2026-10-28): one UTR, one payment proof —
+// a duplicate UTR can never create a second pending row.
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_utr_unique ON payments(utr)'); }
+catch (e) { /* an older database with duplicate UTRs keeps working without the guard */ }
+
 module.exports = db;
