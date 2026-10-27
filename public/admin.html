@@ -52,8 +52,15 @@
         <div class="stat-card"><div class="num" id="stActive">–</div><div class="lbl">👥 Active subscribers</div></div>
         <div class="stat-card"><div class="num" id="stPending">–</div><div class="lbl">⏳ Pending payments</div></div>
         <div class="stat-card"><div class="num" id="stVideos">–</div><div class="lbl">🎬 Videos live</div></div>
+        <div class="stat-card"><div class="num" id="stDbSize">–</div><div class="lbl">💾 Database size</div></div>
+        <div class="stat-card"><div class="num" id="stUploadsSize">–</div><div class="lbl">📁 Uploads on disk</div></div>
       </div>
       <p class="muted" style="font-size:14px">Quick flow: approve a payment → copy the magic link → send it to the customer on WhatsApp. Use Subscribers to copy a link again, extend a plan, or cut off access.</p>
+      <div class="card"><h3>💾 Backup</h3>
+        <p class="muted" style="font-size:13px;margin:6px 0">A copy of the database is saved to your R2 bucket automatically every 6 hours (newest 20 kept). You can also save one right now.</p>
+        <button class="btn" onclick="runBackupNow()">Backup now</button>
+        <div id="backupMsg"></div>
+      </div>
     </div>
 
     <div id="tab-payments" style="display:none">
@@ -138,6 +145,12 @@ async function loadDash(){
     document.getElementById('stActive').textContent=s.active;
     document.getElementById('stPending').textContent=s.pending;
     document.getElementById('stVideos').textContent=s.videos;
+    try{
+      const u=await api('/api/admin/usage');
+      const fmt=(n)=>n>=1048576?(n/1048576).toFixed(1)+' MB':(n/1024).toFixed(0)+' KB';
+      document.getElementById('stDbSize').textContent=fmt(u.dbSize);
+      document.getElementById('stUploadsSize').textContent=fmt(u.uploadsSize);
+    }catch(e){ /* usage numbers are nice-to-have */ }
     document.getElementById('pendingCount').textContent=s.pending?`(${s.pending})`:'';
   }catch(e){ toast('Could not load stats', false); }
 }
@@ -288,6 +301,15 @@ async function loadErrors(){
     <tr><th>When</th><th>Method</th><th>Path</th><th>Message</th></tr>`+
     rows.map(r=>`<tr><td>${new Date(r.created_at).toLocaleString('en-IN')}</td><td>${esc(r.method)}</td><td><code>${esc(r.path)}</code></td><td>${esc(r.message)}</td></tr>`).join('')+'</table></div>'
     : '<p class="muted" style="margin-top:16px">No errors recorded. 🎉</p>';
+}
+// ---------- backup (Phase 3) ----------
+async function runBackupNow(){
+  document.getElementById('backupMsg').innerHTML='<p class="muted">Saving backup…</p>';
+  try{
+    const d=await api('/api/admin/backup',{method:'POST'});
+    document.getElementById('backupMsg').innerHTML='<div class="alert ok">Backup saved ✅ ('+(d.size/1024).toFixed(0)+' KB)</div>';
+    toast('Backup saved ✅');
+  }catch(e){ document.getElementById('backupMsg').innerHTML=`<div class="alert err">${esc(e.message)}</div>`; }
 }
 // auto-show panel if already logged in
 fetch('/api/admin/stats').then(r=>{ if(r.ok){
