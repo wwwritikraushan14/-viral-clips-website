@@ -13,6 +13,7 @@ const QRCode = require('qrcode');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
 const db = require('./db');
+const { spawn, execFile } = require('child_process');
 
 // ---------------- config ----------------
 const PORT = process.env.PORT || 3000;
@@ -61,6 +62,21 @@ if (R2_ON) {
   s3Commands = s3lib;
   getSignedUrl = require('@aws-sdk/s3-request-presigner').getSignedUrl;
 }
+
+// ---- admin quality downloads: convert on the fly with ffmpeg ----
+// Railway's Node image has no ffmpeg, so the static binaries from these
+// npm packages are used when installed; a system ffmpeg/ffprobe in PATH
+// is the fallback (local testing). Without either, quality downloads
+// answer 503 with a plain message instead of crashing.
+let FFMPEG_BIN = 'ffmpeg';
+let FFPROBE_BIN = 'ffprobe';
+try { FFMPEG_BIN = require('@ffmpeg-installer/ffmpeg').path; } catch (e) {}
+try { FFPROBE_BIN = require('@ffprobe-installer/ffprobe').path; } catch (e) {}
+let FFMPEG_OK = false;
+execFile(FFMPEG_BIN, ['-version'], { timeout: 10000 }, (err) => {
+  if (err) return;
+  execFile(FFPROBE_BIN, ['-version'], { timeout: 10000 }, (err2) => { if (!err2) FFMPEG_OK = true; });
+});
 
 // ---------------- automated DB backups to R2 (Phase 3) ----------------
 // A consistent snapshot (VACUUM INTO) is uploaded to the owner's own R2
@@ -442,20 +458,27 @@ app.get('/api/videos', requireSubscriber, (req, res) => {
   res.json(rows);
 });
 
-// Token-gated video streaming with range support.
-app.get('/api/stream/:id', requireSubscriber, ah(async (req, res) => {
-  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
-  if (!video) return res.status(404).json({ error: 'not_found' });
-  // Cloudflare R2 video: hand the member a private signed link (valid 6h)
+// Shared video serving for members AND the admin panel: R2 videos redirect
+// to a private signed link (valid 6h), local videos stream from disk with
+// range support so the player can seek. download=true adds a
+// Content-Disposition attachment header so the browser saves the file
+// instead of playing it.
+function downloadName(video) {
+  const base = (video.title || 'video').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/_+/g, '_').replace(/^[._]+|[._]+$/g, '') || 'video';
+  const ext = (path.extname(video.filename || '').toLowerCase().match(/^\.[a-z0-9]{1,5}$/) || ['.mp4'])[0];
+  return base + ext;
+}
+async function serveVideo(video, req, res, download) {
+  // Cloudflare R2 video: hand over a private signed link (valid 6h)
   // and let Cloudflare serve the video directly — no Railway bandwidth used.
   if (video.storage === 'r2') {
     if (!R2_ON) return res.status(503).json({ error: 'storage_unavailable' });
     try {
-      const url = await getSignedUrl(
-        s3,
-        new s3Commands.GetObjectCommand({ Bucket: R2_BUCKET, Key: video.filename }),
-        { expiresIn: 6 * 3600 }
-      );
+      const cmd = new s3Commands.GetObjectCommand({
+        Bucket: R2_BUCKET, Key: video.filename,
+        ...(download ? { ResponseContentDisposition: `attachment; filename="${downloadName(video)}"` } : {}),
+      });
+      const url = await getSignedUrl(s3, cmd, { expiresIn: 6 * 3600 });
       return res.redirect(302, url);
     } catch (e) {
       return res.status(502).json({ error: 'storage_error', message: 'Could not reach video storage. Try again.' });
@@ -468,6 +491,7 @@ app.get('/api/stream/:id', requireSubscriber, ah(async (req, res) => {
   // Never trust the stored mime type for the response header: only a
   // video/* type is served, anything else falls back to mp4.
   const contentType = (video.mime || '').startsWith('video/') ? video.mime : 'video/mp4';
+  const extra = download ? { 'Content-Disposition': `attachment; filename="${downloadName(video)}"` } : {};
   if (range) {
     const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
     const start = parseInt(startStr, 10);
@@ -480,12 +504,20 @@ app.get('/api/stream/:id', requireSubscriber, ah(async (req, res) => {
       'Accept-Ranges': 'bytes',
       'Content-Length': end - start + 1,
       'Content-Type': contentType,
+      ...extra,
     });
     fs.createReadStream(filePath, { start, end }).pipe(res);
   } else {
-    res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': contentType, 'Accept-Ranges': 'bytes' });
+    res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': contentType, 'Accept-Ranges': 'bytes', ...extra });
     fs.createReadStream(filePath).pipe(res);
   }
+}
+
+// Token-gated video streaming with range support.
+app.get('/api/stream/:id', requireSubscriber, ah(async (req, res) => {
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'not_found' });
+  return serveVideo(video, req, res, false);
 }));
 
 // Public teasers: homepage gallery photos uploaded via the admin panel.
@@ -728,6 +760,99 @@ app.delete('/api/admin/videos/:id', requireAdmin, requireCsrf, ah(async (req, re
 app.get('/api/admin/videos', requireAdmin, (req, res) => {
   res.json(db.prepare('SELECT id, title, size, created_at FROM videos ORDER BY created_at DESC').all());
 });
+
+
+// ---- admin quality-download helpers ----
+// Read a video's real size (width/height). Works for a disk file and for
+// an https URL (ffmpeg reads just the header over range requests).
+function probeHeight(input) {
+  return new Promise((resolve) => {
+    execFile(FFPROBE_BIN, ['-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height', '-of', 'csv=p=0', input],
+      { timeout: 30000 }, (err, stdout) => {
+        if (err) return resolve(null);
+        const parts = String(stdout).trim().split(',').map(Number);
+        resolve(parts.length === 2 && parts[1] > 0 ? { width: parts[0], height: parts[1] } : null);
+      });
+  });
+}
+const QUALITY_STEPS = [240, 360, 720, 1080];
+// Only offer qualities at or below the original — upscaling a 360p video
+// to 1080p would just make a bigger file, not a better picture.
+function availableQualities(height) {
+  return height ? QUALITY_STEPS.filter((q) => q <= height) : [];
+}
+// Resolve what ffmpeg should read: a disk path for local videos, a short
+// signed URL for R2 videos. Returns null when the source can't be reached.
+async function adminVideoInput(video) {
+  if (video.storage === 'r2') {
+    if (!R2_ON) return null;
+    try {
+      return await getSignedUrl(
+        s3,
+        new s3Commands.GetObjectCommand({ Bucket: R2_BUCKET, Key: video.filename }),
+        { expiresIn: 3600 }
+      );
+    } catch (e) { return null; }
+  }
+  const fp = path.join(UPLOAD_DIR, path.basename(video.filename));
+  return fs.existsSync(fp) ? fp : null;
+}
+// Convert to the requested height and stream the result straight to the
+// download — nothing is written to disk first, so a full Railway disk
+// can't block it and a big video doesn't eat RAM.
+function transcodeDownload(video, input, targetH, req, res) {
+  const outName = downloadName(video).replace(/\.[a-z0-9]+$/i, '') + '-' + targetH + 'p.mp4';
+  res.writeHead(200, {
+    'Content-Type': 'video/mp4',
+    'Content-Disposition': `attachment; filename="${outName}"`,
+  });
+  const ff = spawn(FFMPEG_BIN, ['-hide_banner', '-loglevel', 'error', '-i', input,
+    '-vf', `scale=-2:${targetH}`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+    '-c:a', 'aac', '-movflags', 'frag_keyframe+empty_moov+faststart', '-f', 'mp4', 'pipe:1']);
+  ff.stderr.resume(); // drain progress output so ffmpeg never blocks on a full pipe
+  ff.stdout.pipe(res);
+  let done = false;
+  const finish = () => { if (!done) { done = true; try { res.end(); } catch (e) {} } };
+  ff.on('error', finish);
+  ff.on('close', finish);
+  req.on('close', () => { try { ff.kill('SIGKILL'); } catch (e) {} });
+}
+
+// Admin preview + download: the admin is NOT a subscriber, so the member
+// /api/stream route (requireSubscriber) can never serve them. These two
+// admin-only routes use the same serving code instead.
+app.get('/api/admin/videos/:id/stream', requireAdmin, ah(async (req, res) => {
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'not_found' });
+  return serveVideo(video, req, res, false);
+}));
+// What the Download menu shows for one video: Original always, plus every
+// step at or below the video's real height (never upscale).
+app.get('/api/admin/videos/:id/qualities', requireAdmin, ah(async (req, res) => {
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'not_found' });
+  if (!FFMPEG_OK) return res.json({ height: null, qualities: [] });
+  const input = await adminVideoInput(video);
+  if (!input) return res.json({ height: null, qualities: [] });
+  const dims = await probeHeight(input);
+  res.json({ height: dims ? dims.height : null, qualities: availableQualities(dims ? dims.height : null) });
+}));
+app.get('/api/admin/videos/:id/download', requireAdmin, ah(async (req, res) => {
+  const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(req.params.id);
+  if (!video) return res.status(404).json({ error: 'not_found' });
+  const q = String(req.query.quality || 'original').toLowerCase();
+  if (q === 'original') return serveVideo(video, req, res, true);
+  const target = parseInt(q, 10);
+  if (!QUALITY_STEPS.includes(target)) return res.status(400).json({ error: 'bad_quality', message: 'Quality must be 240, 360, 720 or 1080.' });
+  if (!FFMPEG_OK) return res.status(503).json({ error: 'transcode_unavailable', message: 'Quality downloads need the server video tools — they are not installed on this server yet.' });
+  const input = await adminVideoInput(video);
+  if (!input) return res.status(503).json({ error: 'storage_unavailable', message: 'Could not reach this video. Try the Original download.' });
+  const dims = await probeHeight(input);
+  if (!dims) return res.status(502).json({ error: 'probe_failed', message: 'Could not read this video. Try the Original download.' });
+  if (target >= dims.height) return serveVideo(video, req, res, true); // already at or below target: original is best
+  return transcodeDownload(video, input, target, req, res);
+}));
 
 // ---------- homepage teaser images (admin uploads, shown on homepage gallery) ----------
 const teaserUpload = multer({
