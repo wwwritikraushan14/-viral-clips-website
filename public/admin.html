@@ -238,7 +238,7 @@ async function loadVideos(){
       const dateStr = new Date(v.created_at).toLocaleDateString('en-IN');
       const isNew = (now - v.created_at) < 3*864e5;    // added in last 3 days
       return `<div class="adm-vcard">
-        <div class="adm-vthumb" style="--h:${hue}">
+        <div class="adm-vthumb" id="vthumb-${v.id}" style="--h:${hue}">
           <div class="adm-vthumb-play">▶</div>
           <span class="adm-vbadge">${sizeMB}</span>
           ${isNew?'<span class="adm-vnew">NEW</span>':''}
@@ -246,11 +246,38 @@ async function loadVideos(){
         <div class="adm-vbody">
           <div class="adm-vtitle">${esc(v.title)}</div>
           <div class="adm-vmeta">${sizeMB} · ${dateStr}</div>
+          <button class="btn small" onclick="playVideo(${v.id})">▶ Play</button>
+          <button class="btn small ghost" onclick="toggleQuality(${v.id},this)">⬇ Download</button>
+          <div id="qmenu-${v.id}" style="display:none;margin-top:8px"></div>
           <button class="btn small ghost" onclick="armConfirm(this,()=>delVideo(${v.id}))">Delete</button>
         </div>
       </div>`;
     }).join('') + `</div>`
     : '<p class="muted" style="margin-top:16px">No videos yet — upload your first one above.</p>');
+}
+const qCache={};
+async function toggleQuality(id,btn){
+  const m=document.getElementById('qmenu-'+id);
+  if(!m) return;
+  if(m.style.display==='block'){ m.style.display='none'; return; }
+  if(!qCache[id]){
+    try{
+      const d=await api('/api/admin/videos/'+id+'/qualities');
+      const opts=['<a class="btn small ghost" href="/api/admin/videos/'+id+'/download">Original quality</a>'];
+      (d.qualities||[]).forEach(q=>opts.push('<a class="btn small ghost" href="/api/admin/videos/'+id+'/download?quality='+q+'">'+q+'p</a>'));
+      qCache[id]=opts.join('');
+    }catch(e){ qCache[id]='<a class="btn small ghost" href="/api/admin/videos/'+id+'/download">Original quality</a>'; }
+  }
+  m.innerHTML=qCache[id];
+  m.style.display='block';
+}
+function playVideo(id){
+  const thumb=document.getElementById('vthumb-'+id);
+  if(!thumb) return;
+  const wrap=document.createElement('div');
+  wrap.style.cssText='aspect-ratio:16/9;background:#000';
+  wrap.innerHTML='<video controls autoplay playsinline preload="metadata" style="width:100%;height:100%;object-fit:contain" src="/api/admin/videos/'+id+'/stream"></video>';
+  thumb.replaceWith(wrap);
 }
 async function uploadVideo(){
   const f=document.getElementById('vFile').files[0];
